@@ -1,0 +1,933 @@
+-- language: Luau, target: Roblox exploit environment
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+local Window = Rayfield:CreateWindow({
+   Name = "Universal Utility",
+   LoadingTitle = "Initializing...",
+   LoadingSubtitle = "by </ROLEX||》",
+   ConfigurationSaving = {
+      Enabled = false,
+   },
+   KeySystem = false,
+})
+
+-- Services
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
+local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+-- State variables
+local espEnabled = false
+local boxEspEnabled = false
+local tracerEspEnabled = false
+local healthBarEspEnabled = false
+local visibleColorEsp = false
+local maxEspDistance = 1000
+
+local xrayEnabled = false
+local originalXrayTransparencies = {}
+
+local silentAimEnabled = false
+local wallCheckEnabled = false
+local teamCheckEnabled = false
+local bulletGlideEnabled = false
+local noRecoilEnabled = false
+local fovRadius = 150
+local fovVisible = true
+local targetPartOption = "Head"
+
+local speedEnabled = false
+local jumpEnabled = false
+local noclipEnabled = false
+
+local customSpeed = 16
+local customJump = 50
+local espObjects = {}
+
+-- Performance state variables
+local showFpsEnabled = false
+local shadowsEnabled = true
+local blurEnabled = true
+local fogRemoved = false
+local customTime = 14
+local customBrightness = 2
+local texturesRemoved = false
+local fpsCapValue = 0
+local vsyncEnabled = false
+
+-- Storage for UI element references and texture recovery
+local uiElements = {}
+local originalTextures = {}
+
+-- FOV Circle Drawing
+local fovCircle = Drawing.new("Circle")
+fovCircle.Visible = false
+fovCircle.Thickness = 1
+fovCircle.NumSides = 64
+fovCircle.Filled = false
+fovCircle.Color = Color3.fromRGB(255, 255, 255)
+
+-- FPS Counter GUI & Capping Engine
+local fpsGui = Instance.new("ScreenGui")
+fpsGui.Name = "FpsGui"
+fpsGui.ResetOnSpawn = false
+fpsGui.Parent = game:GetService("CoreGui") or LocalPlayer:WaitForChild("PlayerGui")
+
+local fpsLabel = Instance.new("TextLabel")
+fpsLabel.Name = "FpsLabel"
+fpsLabel.Size = UDim2.new(0, 120, 0, 30)
+fpsLabel.Position = UDim2.new(0, 10, 0, 10)
+fpsLabel.BackgroundTransparency = 0.5
+fpsLabel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+fpsLabel.TextColor3 = Color3.fromRGB(0, 255, 0)
+fpsLabel.TextSize = 16
+fpsLabel.Font = Enum.Font.Code
+fpsLabel.Visible = false
+fpsLabel.Parent = fpsGui
+
+local lastUpdate = 0
+local frameCount = 0
+local lastTick = tick()
+
+RunService.RenderStepped:Connect(function(dt)
+    if fpsCapValue > 0 then
+        local targetInterval = 1 / fpsCapValue
+        while (tick() - lastTick) < targetInterval do
+            task.wait()
+        end
+        lastTick = tick()
+    elseif vsyncEnabled then
+        local targetInterval = 1 / 60
+        while (tick() - lastTick) < targetInterval do
+            task.wait()
+        end
+        lastTick = tick()
+    end
+
+    if not showFpsEnabled then return end
+    frameCount = frameCount + 1
+    lastUpdate = lastUpdate + dt
+    if lastUpdate >= 1 then
+        fpsLabel.Text = "FPS: " .. math.floor(frameCount / lastUpdate)
+        frameCount = 0
+        lastUpdate = 0
+    end
+end)
+
+-- Safe Wall Check via Raycast (Returns true if line of sight is clear)
+local function isTargetVisible(targetPart, character)
+    local localChar = LocalPlayer.Character
+    if not localChar or not localChar:FindFirstChild("HumanoidRootPart") then return true end
+    
+    local origin = Camera.CFrame.Position
+    local direction = targetPart.Position - origin
+    
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+    raycastParams.FilterDescendantsInstances = {localChar, character}
+    raycastParams.IgnoreWater = true
+    
+    local success, rayResult = pcall(function()
+        return Workspace:Raycast(origin, direction, raycastParams)
+    end)
+    
+    if not success then return true end
+    return rayResult == nil
+end
+
+-- X-Ray implementation (Makes map parts semi-transparent to see through walls)
+local function toggleXRay(enable)
+    if enable then
+        for _, obj in ipairs(Workspace:GetDescendants()) do
+            if obj:IsA("BasePart") and not obj:IsA("Terrain") then
+                local isInCharacter = false
+                for _, player in ipairs(Players:GetPlayers()) do
+                    if player.Character and obj:IsDescendantOf(player.Character) then
+                        isInCharacter = true
+                        break
+                    end
+                end
+                if not isInCharacter then
+                    if originalXrayTransparencies[obj] == nil then
+                        originalXrayTransparencies[obj] = obj.Transparency
+                    end
+                    obj.Transparency = 0.6
+                end
+            end
+        end
+    else
+        for obj, origTrans in pairs(originalXrayTransparencies) do
+            if obj and obj.Parent then
+                obj.Transparency = origTrans
+            end
+        end
+        originalXrayTransparencies = {}
+    end
+end
+
+-- Silent Aim Target Selector (Unrestricted distance within FOV)
+local function getClosestPlayerInFOV()
+    local closestTarget = nil
+    local shortestDist = fovRadius
+    local mousePos = UserInputService:GetMouseLocation()
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local passTeam = true
+            if teamCheckEnabled and player.Team and LocalPlayer.Team and player.Team == LocalPlayer.Team then
+                passTeam = false
+            end
+            
+            if passTeam then
+                local character = player.Character
+                local humanoid = character:FindFirstChildOfClass("Humanoid")
+                local targetPart = character:FindFirstChild(targetPartOption) or character:FindFirstChild("HumanoidRootPart")
+                
+                if humanoid and humanoid.Health > 0 and targetPart then
+                    local passWall = true
+                    if wallCheckEnabled and not isTargetVisible(targetPart, character) then
+                        passWall = false
+                    end
+                    
+                    if passWall then
+                        local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+                        if onScreen then
+                            local dist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+                            if dist < shortestDist then
+                                shortestDist = dist
+                                closestTarget = targetPart
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return closestTarget
+end
+
+-- Hook Raycast & Workspace methods to absolute-redirect bullet vectors onto target body parts
+local oldRaycast
+oldRaycast = hookmetamethod(game, "__namecall", function(self, ...)
+    local method = getnamecallmethod()
+    local args = {...}
+    
+    if bulletGlideEnabled and silentAimEnabled and (method == "Raycast" or method == "FindPartOnRay" or method == "FindPartOnRayWithIgnoreList" or method == "FindPartOnRayWithWhitelist") then
+        local target = getClosestPlayerInFOV()
+        if target then
+            if method == "Raycast" then
+                local origin = args[1]
+                local direction = (target.Position - origin)
+                args[2] = direction
+            elseif method == "FindPartOnRay" then
+                local ray = args[1]
+                local direction = (target.Position - ray.Origin)
+                args[1] = Ray.new(ray.Origin, direction)
+            end
+        end
+    end
+    
+    return oldRaycast(self, unpack(args))
+end)
+
+-- RenderStepped handling for Camera Lock, Bullet Glide redirection, No Recoil, Movement, Noclip, and Lighting
+RunService.RenderStepped:Connect(function()
+    -- Silent Aim Camera Lock & Bullet Glide Direct Snap
+    if silentAimEnabled and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+        local target = getClosestPlayerInFOV()
+        if target then
+            if bulletGlideEnabled then
+                -- Absolute lock directly onto target body part regardless of distance
+                Camera.CFrame = CFrame.new(Camera.CFrame.Position, target.Position)
+            else
+                local goalCFrame = CFrame.new(Camera.CFrame.Position, target.Position)
+                Camera.CFrame = Camera.CFrame:Lerp(goalCFrame, 0.35)
+            end
+        end
+    end
+
+    -- FOV Circle
+    if silentAimEnabled and fovVisible then
+        fovCircle.Visible = true
+        fovCircle.Radius = fovRadius
+        fovCircle.Position = UserInputService:GetMouseLocation()
+    else
+        fovCircle.Visible = false
+    end
+
+    -- No Recoil Camera Stabilization Hook
+    if noRecoilEnabled then
+        local camera = Workspace.CurrentCamera
+        if camera then
+            -- Zero out camera shake or unexpected rotational kickbacks
+            camera.CFrame = CFrame.new(camera.CFrame.Position) * camera.CFrame.Rotation
+        end
+    end
+
+    -- Continuous Fog Removal Enforcement
+    if fogRemoved then
+        Lighting.FogEnd = 9e9
+        Lighting.FogStart = 0
+        for _, v in ipairs(Lighting:GetChildren()) do
+            if v:IsA("Atmosphere") then
+                v.Density = 0
+                v.Haze = 0
+                v.Glare = 0
+            end
+        end
+    end
+
+    -- Continuous Brightness & Anti-Darkness Enforcement
+    if customBrightness then
+        Lighting.Brightness = customBrightness
+        if customBrightness > 2 then
+            Lighting.OutdoorAmbient = Color3.fromRGB(200, 200, 200)
+            Lighting.Ambient = Color3.fromRGB(200, 200, 200)
+        end
+    end
+
+    -- Character Movement & Noclip Loop
+    local character = LocalPlayer.Character
+    if character then
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            if speedEnabled then
+                humanoid.WalkSpeed = customSpeed
+            end
+            if jumpEnabled then
+                humanoid.JumpPower = customJump
+                humanoid.UseJumpPower = true
+            end
+        end
+        
+        if noclipEnabled then
+            for _, part in ipairs(character:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = false
+                end
+            end
+        end
+    end
+end)
+
+-- Reliable Texture Stripper & Restorer
+local function toggleTextures(remove)
+    if remove then
+        for _, obj in ipairs(Workspace:GetDescendants()) do
+            if obj:IsA("Texture") or obj:IsA("Decal") then
+                if originalTextures[obj] == nil then
+                    originalTextures[obj] = obj.Transparency
+                end
+                obj.Transparency = 1
+            elseif obj:IsA("BasePart") and not obj:IsA("Terrain") then
+                if originalTextures[obj] == nil then
+                    originalTextures[obj] = {Material = obj.Material, Color = obj.Color}
+                end
+                obj.Material = Enum.Material.SmoothPlastic
+                obj.Color = Color3.fromRGB(150, 150, 150)
+            end
+        end
+    else
+        for obj, data in pairs(originalTextures) do
+            if obj and obj.Parent then
+                if obj:IsA("Texture") or obj:IsA("Decal") then
+                    obj.Transparency = data
+                elseif obj:IsA("BasePart") then
+                    obj.Material = data.Material
+                    obj.Color = data.Color
+                end
+            end
+        end
+        originalTextures = {}
+    end
+end
+
+-- ESP Implementation with "Highlight Orange If Visible" logic
+local function removeESP(player)
+    if espObjects[player] then
+        for _, obj in pairs(espObjects[player]) do
+            pcall(function() obj:Remove() end)
+        end
+        espObjects[player] = nil
+    end
+end
+
+local function createESP(player)
+    if player == LocalPlayer then return end
+    removeESP(player)
+    
+    local drawings = {
+        Box = Drawing.new("Square"),
+        Tracer = Drawing.new("Line"),
+        HealthBg = Drawing.new("Square"),
+        HealthBar = Drawing.new("Square"),
+    }
+    
+    drawings.Box.Visible = false
+    drawings.Box.Thickness = 1
+    drawings.Box.Filled = false
+
+    drawings.Tracer.Visible = false
+    drawings.Tracer.Thickness = 1
+
+    drawings.HealthBg.Visible = false
+    drawings.HealthBg.Filled = true
+    drawings.HealthBg.Color = Color3.fromRGB(0, 0, 0)
+
+    drawings.HealthBar.Visible = false
+    drawings.HealthBar.Filled = true
+
+    espObjects[player] = drawings
+    
+    local connection
+    connection = RunService.RenderStepped:Connect(function()
+        if not espEnabled or not player.Parent or not espObjects[player] then
+            for _, obj in pairs(drawings) do pcall(function() obj.Visible = false end) end
+            if not espEnabled then
+                removeESP(player)
+                connection:Disconnect()
+            end
+            return
+        end
+        
+        if teamCheckEnabled and player.Team and LocalPlayer.Team and player.Team == LocalPlayer.Team then
+            for _, obj in pairs(drawings) do obj.Visible = false end
+            return
+        end
+        
+        local character = player.Character
+        local localChar = LocalPlayer.Character
+        if character and character:FindFirstChild("HumanoidRootPart") and character:FindFirstChild("Humanoid") and character.Humanoid.Health > 0 and localChar and localChar:FindFirstChild("HumanoidRootPart") then
+            local rootPart = character.HumanoidRootPart
+            local localRoot = localChar.HumanoidRootPart
+            local humanoid = character.Humanoid
+            
+            local distance = (localRoot.Position - rootPart.Position).Magnitude
+            if distance > maxEspDistance then
+                for _, obj in pairs(drawings) do obj.Visible = false end
+                return
+            end
+            
+            local vector, onScreen = Camera:WorldToViewportPoint(rootPart.Position)
+            
+            if onScreen then
+                local humRootScreen, humVis = Camera:WorldToViewportPoint(rootPart.Position + Vector3.new(0, 3, 0))
+                local legScreen, legVis = Camera:WorldToViewportPoint(rootPart.Position - Vector3.new(0, 3.5, 0))
+                
+                if humVis and legVis then
+                    local height = math.abs(humRootScreen.Y - legScreen.Y)
+                    local width = height / 2
+                    local posX = humRootScreen.X - width / 2
+                    local posY = humRootScreen.Y
+                    
+                    local isVisible = false
+                    if visibleColorEsp and character:FindFirstChild("Head") then
+                        isVisible = isTargetVisible(character.Head, character)
+                    end
+                    
+                    local activeColor = isVisible and Color3.fromRGB(255, 165, 0) or Color3.fromRGB(255, 255, 255)
+                    
+                    if boxEspEnabled then
+                        drawings.Box.Size = Vector2.new(width, height)
+                        drawings.Box.Position = Vector2.new(posX, posY)
+                        drawings.Box.Color = activeColor
+                        drawings.Box.Visible = true
+                    else
+                        drawings.Box.Visible = false
+                    end
+                    
+                    if tracerEspEnabled then
+                        drawings.Tracer.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
+                        drawings.Tracer.To = Vector2.new(humRootScreen.X, legScreen.Y)
+                        drawings.Tracer.Color = activeColor
+                        drawings.Tracer.Visible = true
+                    else
+                        drawings.Tracer.Visible = false
+                    end
+                    
+                    if healthBarEspEnabled then
+                        local healthPercent = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
+                        local barHeight = height * healthPercent
+                        
+                        drawings.HealthBg.Size = Vector2.new(4, height + 2)
+                        drawings.HealthBg.Position = Vector2.new(posX - 6, posY - 1)
+                        drawings.HealthBg.Visible = true
+                        
+                        drawings.HealthBar.Size = Vector2.new(2, barHeight)
+                        drawings.HealthBar.Position = Vector2.new(posX - 5, posY + (height - barHeight))
+                        drawings.HealthBar.Color = Color3.fromRGB(0, 255, 0):Lerp(Color3.fromRGB(255, 0, 0), 1 - healthPercent)
+                        drawings.HealthBar.Visible = true
+                    else
+                        drawings.HealthBg.Visible = false
+                        drawings.HealthBar.Visible = false
+                    end
+                else
+                    for _, obj in pairs(drawings) do obj.Visible = false end
+                end
+            else
+                for _, obj in pairs(drawings) do obj.Visible = false end
+            end
+        else
+            for _, obj in pairs(drawings) do obj.Visible = false end
+        end
+    end)
+end
+
+for _, player in ipairs(Players:GetPlayers()) do
+    createESP(player)
+end
+Players.PlayerAdded:Connect(createESP)
+Players.PlayerRemoving:Connect(removeESP)
+
+-- Create Tabs
+local CombatTab = Window:CreateTab("Combat", 4483362458)
+local VisualsTab = Window:CreateTab("Visuals", 4483362458)
+local MovementTab = Window:CreateTab("Movement", 4483362458)
+local PerformanceTab = Window:CreateTab("Performance", 4483362458)
+local SettingsTab = Window:CreateTab("Settings", 4483362458)
+
+-- Combat Tab Layout
+CombatTab:CreateSection("Silent Aim")
+
+uiElements.SilentAimToggle = CombatTab:CreateToggle({
+   Name = "Enable Silent Aim",
+   CurrentValue = false,
+   Flag = "SilentAimToggle",
+   Callback = function(Value)
+      silentAimEnabled = Value
+   end,
+})
+
+uiElements.WallCheckToggle = CombatTab:CreateToggle({
+   Name = "Wall Check",
+   CurrentValue = false,
+   Flag = "WallCheckToggle",
+   Callback = function(Value)
+      wallCheckEnabled = Value
+   end,
+})
+
+uiElements.TeamCheckToggle = CombatTab:CreateToggle({
+   Name = "Team Check",
+   CurrentValue = false,
+   Flag = "TeamCheckToggle",
+   Callback = function(Value)
+      teamCheckEnabled = Value
+   end,
+})
+
+uiElements.BulletGlideToggle = CombatTab:CreateToggle({
+   Name = "Bullet Glide (Hit Redirection)",
+   CurrentValue = false,
+   Flag = "BulletGlideToggle",
+   Callback = function(Value)
+      bulletGlideEnabled = Value
+   end,
+})
+
+uiElements.NoRecoilToggle = CombatTab:CreateToggle({
+   Name = "No Recoil",
+   CurrentValue = false,
+   Flag = "NoRecoilToggle",
+   Callback = function(Value)
+      noRecoilEnabled = Value
+   end,
+})
+
+uiElements.TargetPartDropdown = CombatTab:CreateDropdown({
+   Name = "Target Part",
+   Options = {"Head", "HumanoidRootPart"},
+   CurrentOption = "Head",
+   Flag = "TargetPartDropdown",
+   Callback = function(Option)
+      targetPartOption = Option
+   end,
+})
+
+uiElements.FovSlider = CombatTab:CreateSlider({
+   Name = "FOV Radius Size",
+   Range = {50, 500},
+   Increment = 10,
+   Suffix = "px",
+   CurrentValue = 150,
+   Flag = "FovSlider",
+   Callback = function(Value)
+      fovRadius = Value
+   end,
+})
+
+uiElements.FovCircleToggle = CombatTab:CreateToggle({
+   Name = "Show FOV Circle",
+   CurrentValue = true,
+   Flag = "FovCircleToggle",
+   Callback = function(Value)
+      fovVisible = Value
+   end,
+})
+
+-- Visuals Tab Layout
+VisualsTab:CreateSection("ESP Suite")
+
+VisualsTab:CreateToggle({
+   Name = "Enable ESP Main",
+   CurrentValue = false,
+   Flag = "ESPToggle",
+   Callback = function(Value)
+      espEnabled = Value
+      if not Value then
+         for player, _ in pairs(espObjects) do removeESP(player) end
+      else
+         for _, player in ipairs(Players:GetPlayers()) do createESP(player) end
+      end
+   end,
+})
+
+VisualsTab:CreateToggle({
+   Name = "Box ESP",
+   CurrentValue = false,
+   Flag = "BoxEspToggle",
+   Callback = function(Value)
+      boxEspEnabled = Value
+   end,
+})
+
+VisualsTab:CreateToggle({
+   Name = "Tracer ESP",
+   CurrentValue = false,
+   Flag = "TracerEspToggle",
+   Callback = function(Value)
+      tracerEspEnabled = Value
+   end,
+})
+
+VisualsTab:CreateToggle({
+   Name = "Health Bar ESP",
+   CurrentValue = false,
+   Flag = "HealthEspToggle",
+   Callback = function(Value)
+      healthBarEspEnabled = Value
+   end,
+})
+
+VisualsTab:CreateToggle({
+   Name = "Highlight Orange If Visible",
+   CurrentValue = false,
+   Flag = "VisibleColorToggle",
+   Callback = function(Value)
+      visibleColorEsp = Value
+   end,
+})
+
+VisualsTab:CreateSlider({
+   Name = "Max ESP Distance",
+   Range = {100, 5000},
+   Increment = 50,
+   Suffix = "studs",
+   CurrentValue = 1000,
+   Flag = "EspDistanceSlider",
+   Callback = function(Value)
+      maxEspDistance = Value
+   end,
+})
+
+VisualsTab:CreateSection("World Visuals")
+
+uiElements.XrayToggle = VisualsTab:CreateToggle({
+   Name = "X-Ray (See Through Walls)",
+   CurrentValue = false,
+   Flag = "XrayToggle",
+   Callback = function(Value)
+      xrayEnabled = Value
+      toggleXRay(Value)
+   end,
+})
+
+-- Movement Tab Layout
+MovementTab:CreateSection("Speed & Jump")
+
+MovementTab:CreateSlider({
+   Name = "WalkSpeed",
+   Range = {16, 200},
+   Increment = 1,
+   Suffix = "Speed",
+   CurrentValue = 16,
+   Flag = "SpeedSlider",
+   Callback = function(Value)
+      customSpeed = Value
+   end,
+})
+
+MovementTab:CreateToggle({
+   Name = "Enable Speed",
+   CurrentValue = false,
+   Flag = "SpeedToggle",
+   Callback = function(Value)
+      speedEnabled = Value
+   end,
+})
+
+MovementTab:CreateSlider({
+   Name = "JumpPower",
+   Range = {50, 300},
+   Increment = 1,
+   Suffix = "Power",
+   CurrentValue = 50,
+   Flag = "JumpSlider",
+   Callback = function(Value)
+      customJump = Value
+   end,
+})
+
+MovementTab:CreateToggle({
+   Name = "Enable Jump",
+   CurrentValue = false,
+   Flag = "JumpToggle",
+   Callback = function(Value)
+      jumpEnabled = Value
+   end,
+})
+
+MovementTab:CreateSection("Physics Modification")
+
+MovementTab:CreateToggle({
+   Name = "Noclip",
+   CurrentValue = false,
+   Flag = "NoclipToggle",
+   Callback = function(Value)
+      noclipEnabled = Value
+   end,
+})
+
+-- Performance Tab Layout
+PerformanceTab:CreateSection("FPS & Render Limiters")
+
+uiElements.ShowFpsToggle = PerformanceTab:CreateToggle({
+   Name = "Show FPS Counter",
+   CurrentValue = false,
+   Flag = "ShowFpsToggle",
+   Callback = function(Value)
+      showFpsEnabled = Value
+      fpsLabel.Visible = Value
+   end,
+})
+
+uiElements.FpsCapSlider = PerformanceTab:CreateSlider({
+   Name = "FPS Cap",
+   Range = {30, 360},
+   Increment = 10,
+   Suffix = "FPS",
+   CurrentValue = 0,
+   Flag = "FpsCapSlider",
+   Callback = function(Value)
+      fpsCapValue = Value
+      pcall(function() setfpscap(Value) end)
+   end,
+})
+
+uiElements.VSyncToggle = PerformanceTab:CreateToggle({
+   Name = "VSync",
+   CurrentValue = false,
+   Flag = "VSyncToggle",
+   Callback = function(Value)
+      vsyncEnabled = Value
+   end,
+})
+
+PerformanceTab:CreateSection("Texture & Quality Boosters")
+
+uiElements.TexturesToggle = PerformanceTab:CreateToggle({
+   Name = "Remove Textures & Decals",
+   CurrentValue = false,
+   Flag = "TexturesToggle",
+   Callback = function(Value)
+      texturesRemoved = Value
+      toggleTextures(Value)
+   end,
+})
+
+uiElements.ShadowsToggle = PerformanceTab:CreateToggle({
+   Name = "Shadows (GlobalShadows)",
+   CurrentValue = true,
+   Flag = "ShadowsToggle",
+   Callback = function(Value)
+      shadowsEnabled = Value
+      Lighting.GlobalShadows = Value
+   end,
+})
+
+uiElements.BlurToggle = PerformanceTab:CreateToggle({
+   Name = "Post-Processing Blur",
+   CurrentValue = true,
+   Flag = "BlurToggle",
+   Callback = function(Value)
+      blurEnabled = Value
+      for _, v in ipairs(Lighting:GetChildren()) do
+         if v:IsA("BlurEffect") then
+            v.Enabled = Value
+         end
+      end
+   end,
+})
+
+uiElements.FogToggle = PerformanceTab:CreateToggle({
+   Name = "Remove Fog",
+   CurrentValue = false,
+   Flag = "FogToggle",
+   Callback = function(Value)
+      fogRemoved = Value
+      if not Value then
+         Lighting.FogEnd = 1000
+         Lighting.FogStart = 0
+         for _, v in ipairs(Lighting:GetChildren()) do
+            if v:IsA("Atmosphere") then
+               v.Density = 0.3
+            end
+         end
+      end
+   end,
+})
+
+PerformanceTab:CreateSection("Environment & Overpower Brightness")
+
+uiElements.TimeSlider = PerformanceTab:CreateSlider({
+   Name = "Time of Day",
+   Range = {0, 24},
+   Increment = 0.5,
+   Suffix = "Hours",
+   CurrentValue = 14,
+   Flag = "TimeSlider",
+   Callback = function(Value)
+      customTime = Value
+      Lighting.ClockTime = Value
+   end,
+})
+
+uiElements.BrightnessSlider = PerformanceTab:CreateSlider({
+   Name = "Brightness & Anti-Darkness",
+   Range = {0, 10},
+   Increment = 0.1,
+   Suffix = "Level",
+   CurrentValue = 2,
+   Flag = "BrightnessSlider",
+   Callback = function(Value)
+      customBrightness = Value
+   end,
+})
+
+PerformanceTab:CreateSection("Reset Options")
+
+PerformanceTab:CreateButton({
+   Name = "Revert Changes Back to Normal",
+   Callback = function()
+      texturesRemoved = false
+      toggleTextures(false)
+      
+      xrayEnabled = false
+      toggleXRay(false)
+      
+      shadowsEnabled = true
+      Lighting.GlobalShadows = true
+      
+      blurEnabled = true
+      for _, v in ipairs(Lighting:GetChildren()) do
+         if v:IsA("BlurEffect") then
+            v.Enabled = true
+         end
+      end
+      
+      fogRemoved = false
+      Lighting.FogEnd = 1000
+      Lighting.FogStart = 0
+      for _, v in ipairs(Lighting:GetChildren()) do
+         if v:IsA("Atmosphere") then
+            v.Density = 0.3
+         end
+      end
+      
+      customTime = 14
+      Lighting.ClockTime = 14
+      
+      customBrightness = 2
+      Lighting.Brightness = 2
+      Lighting.OutdoorAmbient = Color3.fromRGB(128, 128, 128)
+      Lighting.Ambient = Color3.fromRGB(128, 128, 128)
+      
+      fpsCapValue = 0
+      vsyncEnabled = false
+      pcall(function() setfpscap(0) end)
+
+      showFpsEnabled = false
+      fpsLabel.Visible = false
+
+      silentAimEnabled = false
+      wallCheckEnabled = false
+      teamCheckEnabled = false
+      bulletGlideEnabled = false
+      noRecoilEnabled = false
+      visibleColorEsp = false
+      fovRadius = 150
+      fovVisible = true
+      targetPartOption = "Head"
+
+      pcall(function()
+         uiElements.TexturesToggle:Set(false)
+         uiElements.XrayToggle:Set(false)
+         uiElements.ShadowsToggle:Set(true)
+         uiElements.BlurToggle:Set(true)
+         uiElements.FogToggle:Set(false)
+         uiElements.ShowFpsToggle:Set(false)
+         uiElements.FpsCapSlider:Set(0)
+         uiElements.VSyncToggle:Set(false)
+         uiElements.TimeSlider:Set(14)
+         uiElements.BrightnessSlider:Set(2)
+         uiElements.SilentAimToggle:Set(false)
+         uiElements.WallCheckToggle:Set(false)
+         uiElements.TeamCheckToggle:Set(false)
+         uiElements.BulletGlideToggle:Set(false)
+         uiElements.NoRecoilToggle:Set(false)
+         uiElements.VisibleColorToggle:Set(false)
+         uiElements.TargetPartDropdown:Set("Head")
+         uiElements.FovSlider:Set(150)
+         uiElements.FovCircleToggle:Set(true)
+      end)
+   end,
+})
+
+-- Settings Tab Layout
+SettingsTab:CreateSection("Configuration Controls")
+
+SettingsTab:CreateButton({
+   Name = "Unload Script",
+   Callback = function()
+      espEnabled = false
+      speedEnabled = false
+      jumpEnabled = false
+      noclipEnabled = false
+      showFpsEnabled = false
+      silentAimEnabled = false
+      wallCheckEnabled = false
+      teamCheckEnabled = false
+      bulletGlideEnabled = false
+      noRecoilEnabled = false
+      visibleColorEsp = false
+      xrayEnabled = false
+      toggleXRay(false)
+      fpsCapValue = 0
+      vsyncEnabled = false
+      pcall(function() setfpscap(0) end)
+      pcall(function() fpsGui:Destroy() end)
+      pcall(function() fovCircle:Remove() end)
+      
+      toggleTextures(false)
+      
+      for player, _ in pairs(espObjects) do
+         removeESP(player)
+      end
+      
+      Rayfield:Destroy()
+   end,
+})
