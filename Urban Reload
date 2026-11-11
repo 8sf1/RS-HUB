@@ -1,0 +1,277 @@
+--[[
+    RS-Hub Urban Reload
+    Sections: 1. Aimbot  2. ESP  3. Settings
+    Defaults: all off. Disabling ESP hides all drawings immediately.
+    Unload fully cleans up.
+]]
+
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Camera = workspace.CurrentCamera
+local LocalPlayer = Players.LocalPlayer
+
+local Config = {
+    ESP = {
+        Enabled = false, Box = false, Name = false, Health = false, Distance = false,
+        Tracer = false, VisibleTracer = false, TeamCheck = false, MaxDistance = 1000,
+        Color = Color3.fromRGB(255, 60, 60), VisibleColor = Color3.fromRGB(255, 165, 0),
+    },
+    Aimbot = {
+        Enabled = false, FOV = 150, Smoothness = 0.15, ShowFOV = false,
+        TeamCheck = false, WallCheck = false, Keybind = Enum.UserInputType.MouseButton2, Holding = false,
+    },
+}
+
+local Drawings = {}
+local Connections = {}
+local Unloaded = false
+
+local function track(conn)
+    table.insert(Connections, conn)
+    return conn
+end
+
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Thickness = 1
+FOVCircle.NumSides = 64
+FOVCircle.Radius = Config.Aimbot.FOV
+FOVCircle.Filled = false
+FOVCircle.Transparency = 1
+FOVCircle.Color = Color3.fromRGB(255, 255, 255)
+FOVCircle.Visible = false
+
+-- ============ ESP DRAWINGS ============
+
+local function createDrawings(plr)
+    if Drawings[plr] then return end
+    Drawings[plr] = {
+        Box = Drawing.new("Square"), Name = Drawing.new("Text"),
+        Health = Drawing.new("Text"), Distance = Drawing.new("Text"), Tracer = Drawing.new("Line"),
+    }
+    local d = Drawings[plr]
+    d.Box.Thickness = 1; d.Box.Filled = false; d.Box.Transparency = 1
+    d.Name.Size = 14; d.Name.Center = true; d.Name.Outline = true; d.Name.Font = 2
+    d.Health.Size = 14; d.Health.Center = false; d.Health.Outline = true; d.Health.Font = 2
+    d.Distance.Size = 14; d.Distance.Center = true; d.Distance.Outline = true; d.Distance.Font = 2
+    d.Tracer.Thickness = 1; d.Tracer.Transparency = 1
+end
+
+local function removeDrawings(plr)
+    if not Drawings[plr] then return end
+    for _, obj in pairs(Drawings[plr]) do obj:Remove() end
+    Drawings[plr] = nil
+end
+
+local function hideAllDrawings()
+    for _, d in pairs(Drawings) do
+        for _, obj in pairs(d) do obj.Visible = false end
+    end
+end
+
+-- ============ HELPERS ============
+
+local function getCharacter(plr)
+    local char = plr.Character
+    if not char then return nil end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum or hum.Health <= 0 then return nil end
+    return char, hrp, hum
+end
+
+local function isVisible(hrp)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = {LocalPlayer.Character, hrp.Parent}
+    local origin = Camera.CFrame.Position
+    local dir = (hrp.Position - origin)
+    local result = workspace:Raycast(origin, dir, params)
+    return result == nil
+end
+
+local function worldToViewport(pos)
+    local sp, onScreen = Camera:WorldToViewportPoint(pos)
+    return Vector2.new(sp.X, sp.Y), onScreen, sp.Z
+end
+
+-- ============ ESP LOOP ============
+
+local function updateESP()
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr == LocalPlayer then continue end
+        local d = Drawings[plr]
+        if not d then continue end
+        local char, hrp, hum = getCharacter(plr)
+        
+        if not char or not Config.ESP.Enabled then
+            for _, obj in pairs(d) do obj.Visible = false end
+            continue
+        end
+        if Config.ESP.TeamCheck and plr.Team == LocalPlayer.Team then
+            for _, obj in pairs(d) do obj.Visible = false end
+            continue
+        end
+        local dist = (hrp.Position - Camera.CFrame.Position).Magnitude
+        if dist > Config.ESP.MaxDistance then
+            for _, obj in pairs(d) do obj.Visible = false end
+            continue
+        end
+
+        local head = char:FindFirstChild("Head")
+        local rootPos, rootOn, rootDepth = worldToViewport(hrp.Position)
+        local headPos, headOn = worldToViewport((head and head.Position) or (hrp.Position + Vector3.new(0, 1.5, 0)))
+        local footPos = worldToViewport(hrp.Position - Vector3.new(0, 3, 0))
+
+        if not rootOn or rootDepth < 0 then
+            for _, obj in pairs(d) do obj.Visible = false end
+            continue
+        end
+
+        local height = math.abs(footPos.Y - headPos.Y)
+        local width = height / 2
+        local topLeft = Vector2.new(rootPos.X - width / 2, headPos.Y)
+        local bottomRight = Vector2.new(rootPos.X + width / 2, footPos.Y)
+
+        local tracerColor = Config.ESP.Color
+        if Config.ESP.VisibleTracer and isVisible(hrp) then tracerColor = Config.ESP.VisibleColor end
+
+        d.Box.Visible = Config.ESP.Box
+        d.Box.Color = Config.ESP.Color
+        d.Box.Size = Vector2.new(width, height)
+        d.Box.Position = topLeft
+        d.Name.Visible = Config.ESP.Name
+        d.Name.Color = Color3.new(1, 1, 1)
+        d.Name.Text = plr.Name
+        d.Name.Position = Vector2.new(rootPos.X, headPos.Y - 16)
+        d.Health.Visible = Config.ESP.Health
+        d.Health.Color = Color3.fromRGB(80, 255, 80)
+        d.Health.Text = string.format("%d HP", math.floor(hum.Health))
+        d.Health.Position = Vector2.new(bottomRight.X + 4, rootPos.Y - 8)
+        d.Distance.Visible = Config.ESP.Distance
+        d.Distance.Color = Color3.fromRGB(200, 200, 200)
+        d.Distance.Text = string.format("%dm", math.floor(dist))
+        d.Distance.Position = Vector2.new(rootPos.X, footPos.Y + 2)
+        d.Tracer.Visible = Config.ESP.Tracer
+        d.Tracer.Color = tracerColor
+        d.Tracer.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
+        d.Tracer.To = Vector2.new(rootPos.X, footPos.Y)
+    end
+end
+
+-- ============ AIMBOT ============
+
+local function getClosestTarget()
+    local best, bestDist = nil, Config.Aimbot.FOV
+    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr == LocalPlayer then continue end
+        if Config.Aimbot.TeamCheck and plr.Team == LocalPlayer.Team then continue end
+        local char, hrp, hum = getCharacter(plr)
+        if not char then continue end
+        local head = char:FindFirstChild("Head")
+        if not head then continue end
+        if Config.Aimbot.WallCheck and not isVisible(head) then continue end
+        local sp, on = worldToViewport(head.Position)
+        if not on then continue end
+        local d = (sp - center).Magnitude
+        if d < bestDist then best, bestDist = head, d end
+    end
+    return best
+end
+
+local function aimAt(target)
+    if not target then return end
+    local currentCF = Camera.CFrame
+    local desiredCF = CFrame.lookAt(currentCF.Position, target.Position)
+    if Config.Aimbot.Smoothness >= 0.99 then
+        Camera.CFrame = desiredCF
+    else
+        Camera.CFrame = currentCF:Lerp(desiredCF, Config.Aimbot.Smoothness)
+    end
+end
+
+-- ============ LOOPS ============
+
+track(RunService.RenderStepped:Connect(function()
+    if Unloaded then return end
+
+    if Config.ESP.Enabled then updateESP() end
+
+    if Config.Aimbot.ShowFOV then
+        FOVCircle.Visible = true
+        FOVCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+        FOVCircle.Radius = Config.Aimbot.FOV
+    else
+        FOVCircle.Visible = false
+    end
+
+    if Config.Aimbot.Enabled and Config.Aimbot.Holding then
+        local t = getClosestTarget()
+        if t then aimAt(t) end
+    end
+end))
+
+track(UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe or Unloaded then return end
+    if input.UserInputType == Config.Aimbot.Keybind then Config.Aimbot.Holding = true end
+end))
+
+track(UserInputService.InputEnded:Connect(function(input)
+    if Unloaded then return end
+    if input.UserInputType == Config.Aimbot.Keybind then Config.Aimbot.Holding = false end
+end))
+
+for _, plr in ipairs(Players:GetPlayers()) do if plr ~= LocalPlayer then createDrawings(plr) end end
+track(Players.PlayerAdded:Connect(function(plr) if not Unloaded and plr ~= LocalPlayer then createDrawings(plr) end end))
+track(Players.PlayerRemoving:Connect(function(plr) if not Unloaded then removeDrawings(plr) end end))
+
+-- ============ UNLOAD ============
+
+local function unload()
+    if Unloaded then return end
+    Unloaded = true
+
+    for _, conn in ipairs(Connections) do pcall(function() conn:Disconnect() end) end
+    for plr in pairs(Drawings) do removeDrawings(plr) end
+    
+    pcall(function() FOVCircle:Remove() end)
+    pcall(function() Rayfield:Destroy() end)
+end
+
+-- ============ UI ============
+
+local Window = Rayfield:CreateWindow({
+    Name = "RS-Hub Urban Reload", LoadingTitle = "Loading...", LoadingSubtitle = "by VEIL",
+    ConfigurationSaving = {Enabled = false}, KeySystem = false,
+})
+
+local AimTab = Window:CreateTab("1. Aimbot", nil)
+local ESPTab = Window:CreateTab("2. ESP", nil)
+local SettingsTab = Window:CreateTab("3. Settings", nil)
+
+AimTab:CreateToggle({ Name = "Enable Aimbot", CurrentValue = false, Callback = function(v) Config.Aimbot.Enabled = v end })
+AimTab:CreateSlider({ Name = "FOV", Range = {10, 800}, Increment = 10, Suffix = "px", CurrentValue = 150, Callback = function(v) Config.Aimbot.FOV = v end })
+AimTab:CreateSlider({ Name = "FOV Scale (Smoothness)", Range = {0.01, 1}, Increment = 0.01, CurrentValue = 0.15, Callback = function(v) Config.Aimbot.Smoothness = v end })
+AimTab:CreateToggle({ Name = "Show FOV", CurrentValue = false, Callback = function(v) Config.Aimbot.ShowFOV = v end })
+AimTab:CreateToggle({ Name = "Team Check", CurrentValue = false, Callback = function(v) Config.Aimbot.TeamCheck = v end })
+AimTab:CreateToggle({ Name = "Wall Check", CurrentValue = false, Callback = function(v) Config.Aimbot.WallCheck = v end })
+
+ESPTab:CreateToggle({ Name = "Enable ESP", CurrentValue = false, Callback = function(v) Config.ESP.Enabled = v; if not v then hideAllDrawings() end end })
+ESPTab:CreateToggle({ Name = "Box", CurrentValue = false, Callback = function(v) Config.ESP.Box = v end })
+ESPTab:CreateToggle({ Name = "Name", CurrentValue = false, Callback = function(v) Config.ESP.Name = v end })
+ESPTab:CreateToggle({ Name = "Health", CurrentValue = false, Callback = function(v) Config.ESP.Health = v end })
+ESPTab:CreateToggle({ Name = "Distance", CurrentValue = false, Callback = function(v) Config.ESP.Distance = v end })
+ESPTab:CreateToggle({ Name = "Tracer", CurrentValue = false, Callback = function(v) Config.ESP.Tracer = v end })
+ESPTab:CreateToggle({ Name = "Visible Tracer (Orange)", CurrentValue = false, Callback = function(v) Config.ESP.VisibleTracer = v end })
+ESPTab:CreateToggle({ Name = "Team Check", CurrentValue = false, Callback = function(v) Config.ESP.TeamCheck = v end })
+ESPTab:CreateSlider({ Name = "Max Distance", Range = {50, 5000}, Increment = 50, Suffix = "m", CurrentValue = 1000, Callback = function(v) Config.ESP.MaxDistance = v end })
+ESPTab:CreateColorPicker({ Name = "ESP Color", Color = Color3.fromRGB(255, 60, 60), Callback = function(v) Config.ESP.Color = v end })
+ESPTab:CreateColorPicker({ Name = "Visible Tracer Color", Color = Color3.fromRGB(255, 165, 0), Callback = function(v) Config.ESP.VisibleColor = v end })
+
+SettingsTab:CreateButton({ Name = "Unload Script", Callback = function() unload() end })
+
+Rayfield:LoadConfiguration()
