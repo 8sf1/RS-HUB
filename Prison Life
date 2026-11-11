@@ -1,0 +1,770 @@
+--[[
+    RS-Hub Prison Life (ESP Removed)
+    Sections: 1. Weapons  2. Teleports  3. Movement  4. Buildings  5. Camera  6. Vehicles  7. Settings
+]]
+
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+local Mouse = LocalPlayer:GetMouse()
+
+local Config = {
+    Movement = {
+        SpeedEnabled = false,
+        SpeedValue = 50,
+        FlyEnabled = false,
+        FlySpeed = 50,
+        PhaseEnabled = false,
+        PhaseSpeed = 3,
+        ClickTeleport = false,
+        InfJump = false,
+    },
+    Vehicles = {
+        Color = Color3.fromRGB(255, 0, 0),
+        DecalId = "",
+        Rainbow = false,
+    },
+    Camera = {
+        Noclip = false,
+        NoclipDistance = 15,
+        Freecam = false,
+        FreecamSpeed = 50,
+        FOV = 70,
+        XRay = false,
+    },
+    Teleports = {
+        Locations = {
+            ["Criminal Base"] = Vector3.new(-946, 94, 2055),
+            ["Inside Prison"] = Vector3.new(915, 99, 2369),
+            ["Courtyard"] = Vector3.new(783, 97, 2481),
+            ["Guard Tower"] = Vector3.new(812, 125, 2569),
+            ["Front of Prison"] = Vector3.new(461, 98, 2226),
+            ["Police Armory"] = Vector3.new(830, 99, 2272),
+            ["Cafeteria"] = Vector3.new(917, 99, 2337),
+        },
+    },
+    PoliceWeapons = {"M4A1", "Remington 870", "MP5", "M700", "Revolver", "Riot Shield"},
+    CriminalWeapons = {"AK-47", "Remington 870", "M700", "FAL", "C4 Explosive", "Revolver"}
+}
+
+local Connections = {}
+local Unloaded = false
+local FlyBodyVel
+local PlayerDropdownObj
+local LastRainbowUpdate = 0
+local RemovedParts = {}
+local XRayParts = {}
+
+-- Camera Variables
+local FreecamCFrame = Camera.CFrame
+local CamYaw, CamPitch = 0, 0
+local CurrentZoom = 15
+local IsCameraOverridden = false
+
+local function track(conn)
+    table.insert(Connections, conn)
+    return conn
+end
+
+-- ============ HELPERS ============
+
+local function getCharacter()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum or hum.Health <= 0 then return nil end
+    return char, hrp, hum
+end
+
+local function getVehicle()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or not hum.SeatPart then return nil end
+    
+    local seat = hum.SeatPart
+    local vehicle = seat:FindFirstAncestorWhichIsA("Model")
+    return vehicle, seat
+end
+
+-- ============ INFINITE JUMP ============
+
+track(UserInputService.JumpRequest:Connect(function()
+    if Unloaded or not Config.Movement.InfJump then return end
+    local char, hrp, hum = getCharacter()
+    if char and hum then
+        hum:ChangeState(Enum.HumanoidStateType.Jumping)
+    end
+end))
+
+-- ============ CAMERA LOGIC ============
+
+track(UserInputService.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseWheel and Config.Camera.Noclip then
+        CurrentZoom = math.clamp(CurrentZoom - input.Position.Z * 2, 1, 50)
+    end
+end))
+
+local function updateCamera(dt)
+    local char, hrp, hum = getCharacter()
+    if not char or not hrp or not hum then return end
+
+    if not Config.Camera.Noclip and not Config.Camera.Freecam then
+        if IsCameraOverridden then
+            Camera.CameraType = Enum.CameraType.Custom
+            UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+            hum.WalkSpeed = Config.Movement.SpeedEnabled and Config.Movement.SpeedValue or 16
+            hum.JumpPower = 50
+            IsCameraOverridden = false
+        end
+        return
+    end
+
+    IsCameraOverridden = true
+    Camera.CameraType = Enum.CameraType.Scriptable
+
+    if Config.Camera.Freecam then
+        hum.WalkSpeed = 0
+        hum.JumpPower = 0
+        
+        local delta = UserInputService:GetMouseDelta()
+        CamYaw = CamYaw - delta.X * 0.005
+        CamPitch = math.clamp(CamPitch - delta.Y * 0.005, -math.pi/2 + 0.1, math.pi/2 - 0.1)
+        
+        local rotation = CFrame.Angles(0, CamYaw, 0) * CFrame.Angles(CamPitch, 0, 0)
+        FreecamCFrame = CFrame.new(FreecamCFrame.Position) * rotation
+        
+        local moveDir = Vector3.zero
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDir = moveDir + rotation.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDir = moveDir - rotation.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveDir = moveDir - rotation.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveDir = moveDir + rotation.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveDir = moveDir + Vector3.new(0, 1, 0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then moveDir = moveDir - Vector3.new(0, 1, 0) end
+        
+        if moveDir.Magnitude > 0 then
+            FreecamCFrame = FreecamCFrame + (moveDir.Unit * Config.Camera.FreecamSpeed * dt)
+        end
+        
+        Camera.CFrame = FreecamCFrame
+        UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+
+    elseif Config.Camera.Noclip then
+        hum.WalkSpeed = Config.Movement.SpeedEnabled and Config.Movement.SpeedValue or 16
+        hum.JumpPower = 50
+        
+        if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+            UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+            local delta = UserInputService:GetMouseDelta()
+            CamYaw = CamYaw - delta.X * 0.005
+            CamPitch = math.clamp(CamPitch - delta.Y * 0.005, -math.pi/2 + 0.1, math.pi/2 - 0.1)
+        else
+            UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+        end
+        
+        local head = char:FindFirstChild("Head") or hrp
+        local headPos = head.Position
+        local rotation = CFrame.Angles(0, CamYaw, 0) * CFrame.Angles(CamPitch, 0, 0)
+        
+        local camPos = headPos - (rotation.LookVector * CurrentZoom)
+        Camera.CFrame = CFrame.new(camPos) * rotation
+        
+        hrp.CFrame = CFrame.new(hrp.Position, hrp.Position + Vector3.new(rotation.LookVector.X, 0, rotation.LookVector.Z))
+    end
+end
+
+-- ============ XRAY & BUILDINGS ============
+
+local function toggleXRay(state)
+    if state then
+        for _, v in ipairs(Workspace:GetDescendants()) do
+            if v:IsA("BasePart") and not v:IsDescendantOf(LocalPlayer.Character) then
+                local isPlayerPart = false
+                for _, plr in ipairs(Players:GetPlayers()) do
+                    if plr.Character and v:IsDescendantOf(plr.Character) then
+                        isPlayerPart = true
+                        break
+                    end
+                end
+                if not isPlayerPart then
+                    if not XRayParts[v] then XRayParts[v] = v.LocalTransparencyModifier end
+                    v.LocalTransparencyModifier = 0.5
+                end
+            end
+        end
+    else
+        for v, trans in pairs(XRayParts) do
+            if v and v.Parent then v.LocalTransparencyModifier = trans end
+        end
+        XRayParts = {}
+    end
+end
+
+local function removePartsByKeyword(keyword)
+    local count = 0
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("BasePart") or obj:IsA("Model") then
+            local name = obj.Name:lower()
+            if name:find(keyword) and not obj:IsDescendantOf(LocalPlayer.Character) then
+                if obj:IsA("BasePart") then
+                    if not RemovedParts[obj] then
+                        RemovedParts[obj] = { Transparency = obj.Transparency, CanCollide = obj.CanCollide }
+                        obj.Transparency = 1
+                        obj.CanCollide = false
+                        count = count + 1
+                    end
+                elseif obj:IsA("Model") then
+                    for _, part in ipairs(obj:GetDescendants()) do
+                        if part:IsA("BasePart") and not RemovedParts[part] then
+                            RemovedParts[part] = { Transparency = part.Transparency, CanCollide = part.CanCollide }
+                            part.Transparency = 1
+                            part.CanCollide = false
+                            count = count + 1
+                        end
+                    end
+                end
+            end
+        end
+    end
+    Rayfield:Notify({Title = "Removed", Content = "Removed " .. count .. " objects matching '" .. keyword .. "'", Duration = 3})
+end
+
+local function restoreAllBuildings()
+    local count = 0
+    for part, data in pairs(RemovedParts) do
+        if part and part.Parent then
+            part.Transparency = data.Transparency
+            part.CanCollide = data.CanCollide
+            count = count + 1
+        end
+    end
+    RemovedParts = {}
+    Rayfield:Notify({Title = "Restored", Content = "Restored " .. count .. " objects.", Duration = 3})
+end
+
+-- ============ TELEPORT & MOVEMENT LOGIC ============
+
+local function teleportToLocation(pos)
+    local char, hrp = getCharacter()
+    if not hrp or not char then return end
+    
+    local wasNoclip = Config.Movement.PhaseEnabled
+    if not wasNoclip then
+        for _, v in ipairs(char:GetDescendants()) do
+            if v:IsA("BasePart") then v.CanCollide = false end
+        end
+    end
+
+    hrp.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
+    
+    task.delay(0.5, function()
+        if not wasNoclip and not Config.Movement.PhaseEnabled then
+            local currentChar = LocalPlayer.Character
+            if currentChar then
+                for _, v in ipairs(currentChar:GetDescendants()) do
+                    if v:IsA("BasePart") then v.CanCollide = true end
+                end
+            end
+        end
+    end)
+end
+
+local function teleportToWeapon(weaponName, isPolice)
+    local char, hrp = getCharacter()
+    if not hrp or not char then return end
+
+    local giverFolder = Workspace:FindFirstChild("Prison_ITEMS") and Workspace.Prison_ITEMS:FindFirstChild("giver")
+    if not giverFolder then return end
+
+    local bestModel = nil
+    local shortestDist = math.huge
+    local basePos = isPolice and Vector3.new(830, 99, 2272) or Vector3.new(-946, 94, 2055)
+
+    for _, v in ipairs(giverFolder:GetChildren()) do
+        if v.Name == weaponName then
+            local pos = v:GetPivot().Position
+            local dist = (pos - basePos).Magnitude
+            if dist < shortestDist then
+                shortestDist = dist
+                bestModel = v
+            end
+        end
+    end
+
+    if not bestModel then return end
+
+    local pickupPad = bestModel:FindFirstChild("ITEMPICKUP")
+    local targetPos = pickupPad and pickupPad.Position or bestModel:GetPivot().Position
+    
+    if weaponName == "FAL" then targetPos = Vector3.new(-899, 93.5, 2046)
+    elseif weaponName == "C4 Explosive" then targetPos = Vector3.new(-900, 94.5, 2041)
+    elseif weaponName == "Revolver" and not isPolice then targetPos = Vector3.new(-916, 95.5, 2038) end
+
+    local wasNoclip = Config.Movement.PhaseEnabled
+    if not wasNoclip then
+        for _, v in ipairs(char:GetDescendants()) do if v:IsA("BasePart") then v.CanCollide = false end end
+    end
+
+    hrp.CFrame = CFrame.new(targetPos + Vector3.new(0, 2, 0))
+    hrp.AssemblyLinearVelocity = Vector3.new(0, -15, 0)
+    
+    task.delay(0.5, function()
+        if not wasNoclip and not Config.Movement.PhaseEnabled then
+            local currentChar = LocalPlayer.Character
+            if currentChar then for _, v in ipairs(currentChar:GetDescendants()) do if v:IsA("BasePart") then v.CanCollide = true end end end
+        end
+    end)
+end
+
+local function applyPlayerMovement()
+    local char, hrp, hum = getCharacter()
+    if not char or not hrp or not hum then return end
+
+    if Config.Camera.Freecam then return end
+
+    if Config.Movement.PhaseEnabled and not hum.SeatPart then
+        for _, v in ipairs(char:GetDescendants()) do
+            if v:IsA("BasePart") then v.CanCollide = false end
+        end
+        
+        local moveDir = hum.MoveDirection
+        if moveDir.Magnitude > 0 then
+            hrp.CFrame = hrp.CFrame + (moveDir * Config.Movement.PhaseSpeed)
+        end
+    end
+
+    if hum.SeatPart then
+        if FlyBodyVel then FlyBodyVel:Destroy() FlyBodyVel = nil end
+        if hum.PlatformStand then hum.PlatformStand = false end
+        return
+    end
+
+    if Config.Movement.SpeedEnabled then 
+        hum.WalkSpeed = Config.Movement.SpeedValue
+    elseif hum.WalkSpeed == Config.Movement.SpeedValue then 
+        hum.WalkSpeed = 16 
+    end
+
+    if Config.Movement.FlyEnabled then
+        if not FlyBodyVel or not FlyBodyVel.Parent then
+            FlyBodyVel = Instance.new("BodyVelocity")
+            FlyBodyVel.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+            FlyBodyVel.Velocity = Vector3.zero
+            FlyBodyVel.Parent = hrp
+        end
+        hum.PlatformStand = true
+        
+        local camCF = Camera.CFrame
+        local moveDir = Vector3.zero
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDir = moveDir + camCF.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDir = moveDir - camCF.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveDir = moveDir - camCF.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveDir = moveDir + camCF.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveDir = moveDir + Vector3.new(0, 1, 0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then moveDir = moveDir - Vector3.new(0, 1, 0) end
+        
+        if moveDir.Magnitude > 0 then FlyBodyVel.Velocity = moveDir.Unit * Config.Movement.FlySpeed
+        else FlyBodyVel.Velocity = Vector3.zero end
+    else
+        if FlyBodyVel then FlyBodyVel:Destroy() FlyBodyVel = nil end
+        if hum.PlatformStand then hum.PlatformStand = false end
+    end
+end
+
+local function applyVehicleCustomization()
+    local vehicle = getVehicle()
+    if not vehicle then
+        Rayfield:Notify({Title = "Error", Content = "You must be sitting in a vehicle.", Duration = 3})
+        return
+    end
+
+    for _, part in ipairs(vehicle:GetDescendants()) do
+        if part:IsA("BasePart") then
+            local name = part.Name:lower()
+            if not name:find("wheel") and not name:find("window") and not name:find("seat") and part.Transparency < 0.5 then
+                part.Color = Config.Vehicles.Color
+            end
+        end
+    end
+
+    if Config.Vehicles.DecalId ~= "" then
+        local body = vehicle:FindFirstChild("Body") or vehicle.PrimaryPart
+        if body then
+            local existing = body:FindFirstChild("CustomDecal")
+            if existing then existing:Destroy() end
+            local decal = Instance.new("Decal")
+            decal.Name = "CustomDecal"
+            decal.Texture = "rbxassetid://" .. Config.Vehicles.DecalId
+            decal.Face = Enum.NormalId.Top
+            decal.Parent = body
+        end
+    end
+end
+
+local function updateVehicleRainbow()
+    if not Config.Vehicles.Rainbow then return end
+    if tick() - LastRainbowUpdate < 0.1 then return end
+    LastRainbowUpdate = tick()
+
+    local vehicle = getVehicle()
+    if not vehicle then return end
+    
+    local hue = (tick() * 0.5) % 1
+    local rainbowColor = Color3.fromHSV(hue, 1, 1)
+    
+    for _, part in ipairs(vehicle:GetDescendants()) do
+        if part:IsA("BasePart") then
+            local name = part.Name:lower()
+            if not name:find("wheel") and not name:find("window") and not name:find("seat") and part.Transparency < 0.5 then
+                part.Color = rainbowColor
+            end
+        end
+    end
+end
+
+track(RunService.RenderStepped:Connect(function(dt)
+    if Unloaded then return end
+    
+    if Camera.FieldOfView ~= Config.Camera.FOV then
+        Camera.FieldOfView = Config.Camera.FOV
+    end
+
+    applyPlayerMovement()
+    updateVehicleRainbow()
+    updateCamera(dt)
+end))
+
+track(LocalPlayer.CharacterAdded:Connect(function()
+    if FlyBodyVel then FlyBodyVel:Destroy() FlyBodyVel = nil end
+end))
+
+track(UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if Unloaded or gameProcessed then return end
+    
+    if input.UserInputType == Enum.UserInputType.MouseButton1 and Config.Movement.ClickTeleport and not Config.Camera.Noclip and not Config.Camera.Freecam then
+        local char, hrp = getCharacter()
+        if not hrp or not char then return end
+        
+        local targetPos = Mouse.Hit.Position
+        if targetPos then
+            for _, v in ipairs(char:GetDescendants()) do
+                if v:IsA("BasePart") then v.CanCollide = false end
+            end
+            
+            hrp.CFrame = CFrame.new(targetPos + Vector3.new(0, 3, 0))
+            
+            task.delay(0.5, function()
+                local currentChar = LocalPlayer.Character
+                if currentChar and not Config.Movement.PhaseEnabled then
+                    for _, v in ipairs(currentChar:GetDescendants()) do
+                        if v:IsA("BasePart") then v.CanCollide = true end
+                    end
+                end
+            end)
+        end
+    end
+end))
+
+-- ============ UI CREATION ============
+
+local Window = Rayfield:CreateWindow({
+   Name = "RS-Hub Prison Life",
+   LoadingTitle = "Loading...",
+   LoadingSubtitle = "by VEIL",
+   ConfigurationSaving = {Enabled = false},
+   KeySystem = false,
+})
+
+-- ORDER: Weapon, Teleport, Movement, Building, Camera, Vehicle, Settings
+local WeaponTab = Window:CreateTab("Weapons", nil)
+local TeleportTab = Window:CreateTab("Teleports", nil)
+local MoveTab = Window:CreateTab("Movement", nil)
+local BuildTab = Window:CreateTab("Buildings", nil)
+local CameraTab = Window:CreateTab("Camera", nil)
+local VehicleTab = Window:CreateTab("Vehicles", nil)
+local SettingsTab = Window:CreateTab("Settings", nil)
+
+-- WEAPONS TAB
+WeaponTab:CreateSection("Police Armory")
+for _, weapon in ipairs(Config.PoliceWeapons) do
+    WeaponTab:CreateButton({
+        Name = "Grab " .. weapon,
+        Callback = function() teleportToWeapon(weapon, true) end,
+    })
+end
+
+WeaponTab:CreateSection("Criminal Base")
+for _, weapon in ipairs(Config.CriminalWeapons) do
+    WeaponTab:CreateButton({
+        Name = "Grab " .. weapon,
+        Callback = function() teleportToWeapon(weapon, false) end,
+    })
+end
+
+-- TELEPORTS TAB
+TeleportTab:CreateSection("Location Teleports")
+local SelectedLoc = nil
+TeleportTab:CreateDropdown({
+    Name = "Select Location",
+    Options = {"Criminal Base", "Inside Prison", "Courtyard", "Guard Tower", "Front of Prison", "Police Armory", "Cafeteria"},
+    CurrentOption = {},
+    MultipleOptions = false,
+    Flag = "LocDropdown",
+    Callback = function(option) SelectedLoc = option[1] end,
+})
+TeleportTab:CreateButton({
+    Name = "Teleport to Location",
+    Callback = function()
+        if SelectedLoc and Config.Teleports.Locations[SelectedLoc] then
+            teleportToLocation(Config.Teleports.Locations[SelectedLoc])
+        end
+    end,
+})
+
+TeleportTab:CreateSection("Player Teleports")
+local SelectedPlr = nil
+PlayerDropdownObj = TeleportTab:CreateDropdown({
+    Name = "Select Player",
+    Options = {},
+    CurrentOption = {},
+    MultipleOptions = false,
+    Flag = "PlrDropdown",
+    Callback = function(option) SelectedPlr = option[1] end,
+})
+TeleportTab:CreateButton({
+    Name = "Teleport to Player",
+    Callback = function()
+        if SelectedPlr then
+            local target = Players:FindFirstChild(SelectedPlr)
+            if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
+                teleportToLocation(target.Character.HumanoidRootPart.Position)
+            end
+        end
+    end,
+})
+
+-- MOVEMENT TAB
+MoveTab:CreateSection("Player Movement")
+MoveTab:CreateToggle({
+    Name = "Infinite Jump",
+    CurrentValue = false,
+    Flag = "InfJumpToggle",
+    Callback = function(v) Config.Movement.InfJump = v end,
+})
+MoveTab:CreateSlider({
+    Name = "WalkSpeed",
+    Range = {16, 100},
+    Increment = 1,
+    CurrentValue = 50,
+    Flag = "SpeedSlider",
+    Callback = function(v) Config.Movement.SpeedValue = v end,
+})
+MoveTab:CreateToggle({
+    Name = "Enable Speed",
+    CurrentValue = false,
+    Flag = "SpeedToggle",
+    Callback = function(v) Config.Movement.SpeedEnabled = v end,
+})
+
+MoveTab:CreateSection("Player Flight")
+MoveTab:CreateSlider({
+    Name = "Fly Speed",
+    Range = {10, 200},
+    Increment = 5,
+    CurrentValue = 50,
+    Flag = "FlySpeedSlider",
+    Callback = function(v) Config.Movement.FlySpeed = v end,
+})
+MoveTab:CreateToggle({
+    Name = "Enable Fly",
+    CurrentValue = false,
+    Flag = "FlyToggle",
+    Callback = function(v) Config.Movement.FlyEnabled = v end,
+})
+
+MoveTab:CreateSection("CFrame Phasing (God Noclip)")
+MoveTab:CreateLabel("Forces you through thick walls. Adjust slider if stuck.", Color3.fromRGB(150, 150, 150))
+MoveTab:CreateSlider({
+    Name = "Phase Distance",
+    Range = {1, 10},
+    Increment = 1,
+    CurrentValue = 3,
+    Flag = "PhaseSlider",
+    Callback = function(v) Config.Movement.PhaseSpeed = v end,
+})
+MoveTab:CreateToggle({
+    Name = "Enable Phase Noclip",
+    CurrentValue = false,
+    Flag = "PhaseToggle",
+    Callback = function(v) 
+        Config.Movement.PhaseEnabled = v 
+        if not v then
+            local char = LocalPlayer.Character
+            if char then
+                for _, p in ipairs(char:GetDescendants()) do
+                    if p:IsA("BasePart") then p.CanCollide = true end
+                end
+            end
+        end
+    end,
+})
+
+MoveTab:CreateSection("Click Teleport")
+MoveTab:CreateLabel("Click anywhere in the world to teleport there.", Color3.fromRGB(150, 150, 150))
+MoveTab:CreateToggle({
+    Name = "Enable Click Teleport",
+    CurrentValue = false,
+    Flag = "ClickTeleportToggle",
+    Callback = function(v) Config.Movement.ClickTeleport = v end,
+})
+
+-- BUILDINGS TAB
+BuildTab:CreateSection("Remove Map Objects")
+BuildTab:CreateLabel("Makes walls/doors invisible and walk-through for you.", Color3.fromRGB(200, 200, 200))
+
+BuildTab:CreateButton({
+    Name = "Remove Prison Walls",
+    Callback = function() removePartsByKeyword("wall") end,
+})
+BuildTab:CreateButton({
+    Name = "Remove Doors",
+    Callback = function() removePartsByKeyword("door") end,
+})
+BuildTab:CreateButton({
+    Name = "Remove Gates",
+    Callback = function() removePartsByKeyword("gate") end,
+})
+BuildTab:CreateButton({
+    Name = "Remove Fences",
+    Callback = function() removePartsByKeyword("fence") end,
+})
+
+BuildTab:CreateSection("Recovery")
+BuildTab:CreateButton({
+    Name = "Restore All Removed Objects",
+    Callback = function() restoreAllBuildings() end,
+})
+
+-- CAMERA TAB
+CameraTab:CreateSection("Camera Noclip")
+CameraTab:CreateLabel("Hold Right-Click to look around. Scroll to zoom.", Color3.fromRGB(200, 200, 200))
+CameraTab:CreateToggle({
+    Name = "Enable Camera Noclip",
+    CurrentValue = false,
+    Flag = "CamNoclipToggle",
+    Callback = function(v) 
+        Config.Camera.Noclip = v
+        if v then
+            local currentCF = Camera.CFrame
+            CamYaw = math.atan2(-currentCF.LookVector.X, -currentCF.LookVector.Z)
+            CamPitch = math.asin(currentCF.LookVector.Y)
+            CurrentZoom = Config.Camera.NoclipDistance
+            Config.Camera.Freecam = false
+        end
+    end,
+})
+
+CameraTab:CreateSection("Freecam")
+CameraTab:CreateLabel("Freezes character and flies camera. WASD + Space/Ctrl.", Color3.fromRGB(200, 200, 200))
+CameraTab:CreateSlider({
+    Name = "Freecam Speed",
+    Range = {10, 200},
+    Increment = 5,
+    CurrentValue = 50,
+    Flag = "CamSpeedSlider",
+    Callback = function(v) Config.Camera.FreecamSpeed = v end,
+})
+CameraTab:CreateToggle({
+    Name = "Enable Freecam (Freeze Character)",
+    CurrentValue = false,
+    Flag = "FreecamToggle",
+    Callback = function(v) 
+        Config.Camera.Freecam = v 
+        if v then
+            FreecamCFrame = Camera.CFrame
+            Config.Camera.Noclip = false
+        end
+    end,
+})
+
+CameraTab:CreateSection("Visuals")
+CameraTab:CreateToggle({
+    Name = "Enable X-Ray (See through walls)",
+    CurrentValue = false,
+    Flag = "XRayToggle",
+    Callback = function(v) 
+        Config.Camera.XRay = v
+        toggleXRay(v)
+    end,
+})
+CameraTab:CreateSlider({
+    Name = "FOV (Field of View)",
+    Range = {30, 120},
+    Increment = 1,
+    CurrentValue = 70,
+    Flag = "FOVSlider",
+    Callback = function(v) Config.Camera.FOV = v end,
+})
+
+-- VEHICLES TAB
+VehicleTab:CreateSection("Vehicle Customization")
+VehicleTab:CreateLabel("You must be sitting in a car to use these.", Color3.fromRGB(200, 200, 200))
+VehicleTab:CreateColorPicker({
+    Name = "Car Color",
+    Color = Color3.fromRGB(255, 0, 0),
+    Flag = "CarColor",
+    Callback = function(v) Config.Vehicles.Color = v end,
+})
+VehicleTab:CreateInput({
+    Name = "Decal ID",
+    PlaceholderText = "e.g. 12345678",
+    RemoveTextAfterFocusLost = false,
+    Flag = "DecalId",
+    Callback = function(v) Config.Vehicles.DecalId = v end,
+})
+VehicleTab:CreateButton({
+    Name = "Apply Color & Decal",
+    Callback = function() applyVehicleCustomization() end,
+})
+VehicleTab:CreateToggle({
+    Name = "Rainbow Car Effect",
+    CurrentValue = false,
+    Flag = "RainbowToggle",
+    Callback = function(v) Config.Vehicles.Rainbow = v end,
+})
+
+-- SETTINGS TAB
+SettingsTab:CreateSection("Configuration")
+SettingsTab:CreateButton({
+    Name = "Unload Script",
+    Callback = function()
+        if FlyBodyVel then FlyBodyVel:Destroy() end
+        restoreAllBuildings()
+        toggleXRay(false)
+        Camera.CameraType = Enum.CameraType.Custom
+        UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+        
+        for _, conn in ipairs(Connections) do pcall(function() conn:Disconnect() end) end
+        Rayfield:Destroy()
+    end,
+})
+
+-- Update Player Dropdown
+local function updatePlayerDropdown()
+    local plrs = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then table.insert(plrs, p.Name) end
+    end
+    if PlayerDropdownObj then
+        PlayerDropdownObj:Refresh(plrs)
+    end
+end
+
+Players.PlayerAdded:Connect(updatePlayerDropdown)
+Players.PlayerRemoving:Connect(updatePlayerDropdown)
+task.spawn(updatePlayerDropdown)
