@@ -475,7 +475,7 @@ end))
 local Window = Rayfield:CreateWindow({
    Name = "RS-Hub Prison Life",
    LoadingTitle = "Loading...",
-   LoadingSubtitle = "by VEIL",
+   LoadingSubtitle = "By Rs-Hub",
    ConfigurationSaving = {Enabled = false},
    KeySystem = false,
 })
