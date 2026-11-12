@@ -1,0 +1,714 @@
+-- language: Luau, target: Roblox exploit execution, game: DEGRADE
+local success, Rayfield = pcall(function()
+    return loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+end)
+
+if not success or not Rayfield then
+    return
+end
+
+local Window = Rayfield:CreateWindow({
+    Name = "RS-HUB | DEGRADE",
+    LoadingTitle = "Initializing DEGRADE Hub...",
+    LoadingSubtitle = "by RS-Hub",
+    ConfigurationSaving = { Enabled = false },
+    KeySystem = false,
+})
+
+local CombatTab = Window:CreateTab("Combat", 4483362458)
+local VisualsTab = Window:CreateTab("Visuals", 4483362458)
+local WorldTab = Window:CreateTab("World", 4483362458)
+local MovementTab = Window:CreateTab("Movement", 4483362458)
+local SettingsTab = Window:CreateTab("Settings", 4483362458)
+
+local CONFIG = {
+    ESPEnabled = false, BoxESP = false, NameESP = false, DistanceESP = false,
+    HealthESP = false, WeaponESP = false, TracerESP = false, SkeletonESP = false,
+    DeadCheck = false, SleepingESP = false, Chams = false, Rainbow = false,
+    TeamCheck = false, MaxDistance = 1500,
+    
+    OreESP = false, SelectedOre = "Stone Node", OreMaxDistance = 100,
+    
+    XRay = false, FullBright = false,
+
+    Aimbot = false, RMBOnly = false, ShowFOV = false, FOVSize = 150,
+    Smoothness = 5, TargetPart = "Auto", AimbotTeamCheck = false, WallCheck = true,
+    PriorityTarget = false, PriorityTimeout = 3, Prediction = false,
+    BulletSpeed = 1000, PredictScale = 1, EnableSilent = false,
+    SilentMode = "Raycast", AutoFire = false,
+
+    EnableSpeed = false, SpeedAmount = 30, EnableSpider = false, NoClip = false,
+    TeleportToMouse = false, FreeCam = false, ThirdPerson = false,
+}
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Lighting = game:GetService("Lighting")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+local espCache = {}
+local worldEspCache = {}
+local originalTransparencies = {}
+local originalWalkSpeed = 16
+
+-- Camera backups
+local originalCameraMode = LocalPlayer.CameraMode
+local originalMaxZoom = LocalPlayer.CameraMaxZoomDistance
+local originalMinZoom = LocalPlayer.CameraMinZoomDistance
+local originalBrightness = Lighting.Brightness
+local originalClockTime = Lighting.ClockTime
+local originalGlobalShadows = Lighting.GlobalShadows
+local originalOutdoorAmbient = Lighting.OutdoorAmbient
+
+local fovCircle = Drawing.new("Circle")
+fovCircle.Visible = false
+fovCircle.Thickness = 1
+fovCircle.NumSides = 32
+fovCircle.Filled = false
+fovCircle.Transparency = 0.7
+fovCircle.Color = Color3.fromRGB(255, 255, 255)
+
+local freeCamConn = nil
+local freeCamPos = Vector3.new()
+local freeCamAngles = Vector2.new()
+local isRightMouseDown = false
+
+local function getOrCreateDrawings(key)
+    if not espCache[key] then
+        espCache[key] = {
+            Box = Drawing.new("Square"), Name = Drawing.new("Text"),
+            Distance = Drawing.new("Text"), Health = Drawing.new("Text"),
+            Weapon = Drawing.new("Text"), Tracer = Drawing.new("Line"),
+            Skeletons = { Drawing.new("Line"), Drawing.new("Line"), Drawing.new("Line"), Drawing.new("Line"), Drawing.new("Line") }
+        }
+        local d = espCache[key]
+        d.Box.Filled = false; d.Box.Thickness = 1
+        d.Name.Size = 14; d.Name.Center = true; d.Name.Outline = true
+        d.Distance.Size = 12; d.Distance.Center = true; d.Distance.Outline = true
+        d.Health.Size = 12; d.Health.Center = true; d.Health.Outline = true
+        d.Weapon.Size = 12; d.Weapon.Center = true; d.Weapon.Outline = true
+        d.Tracer.Thickness = 1
+        for _, line in ipairs(d.Skeletons) do line.Thickness = 1; line.Color = Color3.fromRGB(255, 255, 255) end
+    end
+    return espCache[key]
+end
+
+local function getOrCreateWorldDrawing(inst)
+    if not worldEspCache[inst] then
+        worldEspCache[inst] = Drawing.new("Text")
+        worldEspCache[inst].Size = 13
+        worldEspCache[inst].Center = true
+        worldEspCache[inst].Outline = true
+        worldEspCache[inst].Color = Color3.fromRGB(255, 215, 0)
+        worldEspCache[inst].Visible = false
+    end
+    return worldEspCache[inst]
+end
+
+local function hideDrawings(drawings)
+    if not drawings then return end
+    if drawings.Box then drawings.Box.Visible = false end
+    if drawings.Name then drawings.Name.Visible = false end
+    if drawings.Distance then drawings.Distance.Visible = false end
+    if drawings.Health then drawings.Health.Visible = false end
+    if drawings.Weapon then drawings.Weapon.Visible = false end
+    if drawings.Tracer then drawings.Tracer.Visible = false end
+    if drawings.Skeletons then for _, line in ipairs(drawings.Skeletons) do line.Visible = false end end
+end
+
+local function getEquippedWeapon(character)
+    if not character then return "None" end
+    for _, child in ipairs(character:GetChildren()) do if child:IsA("Tool") then return child.Name end end
+    return "None"
+end
+
+local function isPlayerDead(humanoid, character)
+    if not character then return false end
+    if humanoid and humanoid.Health <= 0 then return true end
+    if character:GetAttribute("IsDead") == true or character:GetAttribute("Dead") == true or character:GetAttribute("Knocked") == true then return true end
+    if not character:FindFirstChild("HumanoidRootPart") then return true end
+    return false
+end
+
+local function isPlayerSleeping(character)
+    if not character then return false end
+    if character:GetAttribute("IsSleeping") == true or character:GetAttribute("Sleeping") == true or character:FindFirstChild("Sleeping") then return true end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if humanoid and (humanoid.PlatformStand or humanoid.Sit) and not character:FindFirstChild("HumanoidRootPart") then return true end
+    return false
+end
+
+-- ==================== STRICT ORE MATCHER ====================
+local function isTargetOre(obj, selectedOre)
+    local name = obj.Name:lower()
+    local sel = selectedOre:lower()
+    
+    local ignoreWords = {"wall", "floor", "building", "furniture", "door", "window", "prop", "decor", "base", "house", "structure", "gate", "fence", "roof", "terrain", "part", "brick", "glass", "wood"}
+    for _, word in ipairs(ignoreWords) do
+        if name:find(word) then return false end
+    end
+
+    local hasPrompt = obj:FindFirstChildOfClass("ProximityPrompt") or obj:FindFirstChildOfClass("ClickDetector")
+    local hasHealth = obj:FindFirstChild("Health") or obj:FindFirstChild("Durability")
+    local isNodeName = name:find("node") or name:find("ore") or name:find("vein") or name:find("deposit") or name:find("mineral") or name:find("rock")
+    
+    if not (hasPrompt or hasHealth or isNodeName) then return false end
+
+    local function matchString(str)
+        if sel:find("stone") and str:find("stone") then return true end
+        if sel:find("metal") and (str:find("metal") or str:find("iron") or str:find("scrap") or str:find("copper")) then return true end
+        if sel:find("sulfur") and (str:find("sulfur") or str:find("sulphur")) then return true end
+        return false
+    end
+
+    if matchString(name) then return true end
+
+    local attr = obj:GetAttribute("OreType") or obj:GetAttribute("Type") or obj:GetAttribute("Resource")
+    if attr and matchString(tostring(attr):lower()) then return true end
+
+    if obj:IsA("Model") then
+        for _, child in ipairs(obj:GetChildren()) do
+            if matchString(child.Name:lower()) then return true end
+        end
+    end
+
+    return false
+end
+
+-- ==================== EVENT-DRIVEN ORE CACHE ====================
+local trackedOres = {}
+
+local function addOre(obj)
+    if trackedOres[obj] then return end
+    
+    local label = CONFIG.SelectedOre
+    if isTargetOre(obj, label) then
+        local part = obj:IsA("BasePart") and obj or obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
+        if part then
+            local hl = Instance.new("Highlight")
+            hl.Name = "RS_OreOutline"
+            hl.Adornee = obj
+            hl.FillTransparency = 1 
+            hl.OutlineTransparency = 0
+            hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+            hl.OutlineColor = Color3.fromRGB(255, 215, 0)
+            hl.Enabled = false
+            hl.Parent = obj
+            
+            trackedOres[obj] = {
+                instance = obj,
+                part = part,
+                highlight = hl,
+                label = label
+            }
+        end
+    end
+end
+
+local function removeOre(obj)
+    if trackedOres[obj] then
+        if trackedOres[obj].highlight then
+            trackedOres[obj].highlight:Destroy()
+        end
+        trackedOres[obj] = nil
+    end
+    
+    local txt = worldEspCache[obj]
+    if txt then
+        txt:Remove()
+        worldEspCache[obj] = nil
+    end
+end
+
+local function rebuildOreCache()
+    for obj, _ in pairs(trackedOres) do
+        removeOre(obj)
+    end
+    
+    if not CONFIG.OreESP then return end
+    
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") or obj:IsA("BasePart") then
+            addOre(obj)
+        end
+    end
+end
+
+workspace.DescendantAdded:Connect(function(obj)
+    if CONFIG.OreESP and (obj:IsA("Model") or obj:IsA("BasePart")) then
+        addOre(obj)
+    end
+end)
+
+workspace.DescendantRemoving:Connect(function(obj)
+    if trackedOres[obj] then
+        removeOre(obj)
+    end
+end)
+
+-- ==================== VISUALS TAB ====================
+VisualsTab:CreateSection("Visuals")
+VisualsTab:CreateToggle({ Name = "Enable ESP", CurrentValue = false, Flag = "EnableESP", Callback = function(v) CONFIG.ESPEnabled = v end })
+VisualsTab:CreateToggle({ Name = "Box ESP", CurrentValue = false, Flag = "BoxESP", Callback = function(v) CONFIG.BoxESP = v end })
+VisualsTab:CreateToggle({ Name = "Name", CurrentValue = false, Flag = "NameESP", Callback = function(v) CONFIG.NameESP = v end })
+VisualsTab:CreateToggle({ Name = "Distance", CurrentValue = false, Flag = "DistanceESP", Callback = function(v) CONFIG.DistanceESP = v end })
+VisualsTab:CreateToggle({ Name = "Health", CurrentValue = false, Flag = "HealthESP", Callback = function(v) CONFIG.HealthESP = v end })
+VisualsTab:CreateToggle({ Name = "Weapon", CurrentValue = false, Flag = "WeaponESP", Callback = function(v) CONFIG.WeaponESP = v end })
+VisualsTab:CreateToggle({ Name = "Tracer", CurrentValue = false, Flag = "TracerESP", Callback = function(v) CONFIG.TracerESP = v end })
+VisualsTab:CreateToggle({ Name = "Skeleton ESP", CurrentValue = false, Flag = "SkeletonESP", Callback = function(v) CONFIG.SkeletonESP = v end })
+VisualsTab:CreateToggle({ Name = "Dead Check", CurrentValue = false, Flag = "DeadCheck", Callback = function(v) CONFIG.DeadCheck = v end })
+VisualsTab:CreateToggle({ Name = "Sleeping ESP", CurrentValue = false, Flag = "SleepingESP", Callback = function(v) CONFIG.SleepingESP = v end })
+VisualsTab:CreateToggle({ Name = "Chams", CurrentValue = false, Flag = "Chams", Callback = function(v)
+    CONFIG.Chams = v
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            for _, part in ipairs(p.Character:GetChildren()) do
+                if part:IsA("BasePart") then
+                    if v then
+                        local hl = part:FindFirstChild("RS_Chams")
+                        if not hl then
+                            hl = Instance.new("Highlight")
+                            hl.Name = "RS_Chams"
+                            hl.Adornee = p.Character
+                            hl.FillColor = Color3.fromRGB(255, 255, 255)
+                            hl.OutlineColor = Color3.fromRGB(0, 0, 0)
+                            hl.Parent = part
+                        end
+                    else
+                        local hl = part:FindFirstChild("RS_Chams")
+                        if hl then hl:Destroy() end
+                    end
+                end
+            end
+        end
+    end
+end })
+VisualsTab:CreateToggle({ Name = "Rainbow", CurrentValue = false, Flag = "Rainbow", Callback = function(v) CONFIG.Rainbow = v end })
+VisualsTab:CreateToggle({ Name = "Team Check", CurrentValue = false, Flag = "TeamCheck", Callback = function(v) CONFIG.TeamCheck = v end })
+VisualsTab:CreateSlider({ Name = "Max Distance", Range = {100, 5000}, Increment = 50, Suffix = "m", CurrentValue = 1500, Flag = "MaxDistance", Callback = function(v) CONFIG.MaxDistance = v end })
+
+-- ==================== WORLD TAB ====================
+WorldTab:CreateSection("World Modifications")
+WorldTab:CreateToggle({ Name = "X-Ray", CurrentValue = false, Flag = "XRay", Callback = function(v)
+    CONFIG.XRay = v
+    if v then
+        for _, obj in ipairs(workspace:GetDescendants()) do
+            if obj:IsA("BasePart") and not obj:IsDescendantOf(LocalPlayer.Character) then
+                local isChar = false
+                for _, p in ipairs(Players:GetPlayers()) do
+                    if p.Character and obj:IsDescendantOf(p.Character) then isChar = true break end
+                end
+                if not isChar then
+                    originalTransparencies[obj] = obj.Transparency
+                    obj.Transparency = 0.6
+                end
+            end
+        end
+    else
+        for obj, trans in pairs(originalTransparencies) do
+            if obj and obj.Parent then obj.Transparency = trans end
+        end
+        originalTransparencies = {}
+    end
+end })
+
+WorldTab:CreateToggle({ Name = "Full Bright", CurrentValue = false, Flag = "FullBright", Callback = function(v)
+    CONFIG.FullBright = v
+    if not v then
+        Lighting.Brightness = originalBrightness
+        Lighting.ClockTime = originalClockTime
+        Lighting.GlobalShadows = originalGlobalShadows
+        Lighting.OutdoorAmbient = originalOutdoorAmbient
+    end
+end })
+
+WorldTab:CreateSection("Ores Filter")
+WorldTab:CreateToggle({ Name = "Ore ESP", CurrentValue = false, Flag = "OreESP", Callback = function(v) 
+    CONFIG.OreESP = v 
+    rebuildOreCache()
+end })
+WorldTab:CreateDropdown({
+    Name = "Select Ore",
+    Options = {"Stone Node", "Metal Node", "Sulfur Node"},
+    CurrentOption = "Stone Node",
+    Flag = "SelectedOre",
+    Callback = function(v) 
+        CONFIG.SelectedOre = v[1] or v 
+        rebuildOreCache()
+    end,
+})
+WorldTab:CreateSlider({ Name = "Ore Max Distance", Range = {50, 5000}, Increment = 50, Suffix = "m", CurrentValue = 100, Flag = "OreMaxDistance", Callback = function(v) CONFIG.OreMaxDistance = v end })
+
+-- ==================== COMBAT TAB ====================
+CombatTab:CreateSection("Aimbot")
+CombatTab:CreateToggle({ Name = "Enable Aimbot", CurrentValue = false, Flag = "EnableAimbot", Callback = function(v) CONFIG.Aimbot = v end })
+CombatTab:CreateToggle({ Name = "Only When RMB", CurrentValue = false, Flag = "OnlyWhenRMB", Callback = function(v) CONFIG.RMBOnly = v end })
+CombatTab:CreateToggle({ Name = "Show FOV", CurrentValue = false, Flag = "ShowFOV", Callback = function(v) CONFIG.ShowFOV = v end })
+CombatTab:CreateSlider({ Name = "FOV Size", Range = {10, 500}, Increment = 5, Suffix = "px", CurrentValue = 150, Flag = "FOVSize", Callback = function(v) CONFIG.FOVSize = v end })
+CombatTab:CreateSlider({ Name = "Smoothness", Range = {1, 20}, Increment = 1, Suffix = "", CurrentValue = 5, Flag = "Smoothness", Callback = function(v) CONFIG.Smoothness = v end })
+CombatTab:CreateDropdown({ Name = "Target Part", Options = {"Auto", "Head", "HumanoidRootPart"}, CurrentOption = "Auto", Flag = "TargetPart", Callback = function(v) CONFIG.TargetPart = v[1] or v end })
+CombatTab:CreateToggle({ Name = "Team Check", CurrentValue = false, Flag = "AimbotTeamCheck", Callback = function(v) CONFIG.AimbotTeamCheck = v end })
+CombatTab:CreateToggle({ Name = "Wall Check", CurrentValue = true, Flag = "AimbotWallCheck", Callback = function(v) CONFIG.WallCheck = v end })
+CombatTab:CreateToggle({ Name = "Priority Target", CurrentValue = false, Flag = "PriorityTarget", Callback = function(v) CONFIG.PriorityTarget = v end })
+CombatTab:CreateSlider({ Name = "Priority Timeout", Range = {1, 10}, Increment = 1, Suffix = "s", CurrentValue = 3, Flag = "PriorityTimeout", Callback = function(v) CONFIG.PriorityTimeout = v end })
+
+CombatTab:CreateSection("Prediction")
+CombatTab:CreateToggle({ Name = "Prediction", CurrentValue = false, Flag = "Prediction", Callback = function(v) CONFIG.Prediction = v end })
+CombatTab:CreateSlider({ Name = "Bullet Speed", Range = {100, 5000}, Increment = 50, Suffix = "", CurrentValue = 1000, Flag = "BulletSpeed", Callback = function(v) CONFIG.BulletSpeed = v end })
+CombatTab:CreateSlider({ Name = "Predict Scale", Range = {0.1, 5}, Increment = 0.1, Suffix = "", CurrentValue = 1, Flag = "PredictScale", Callback = function(v) CONFIG.PredictScale = v end })
+
+CombatTab:CreateSection("Silent Aim")
+CombatTab:CreateToggle({ Name = "Enable Silent", CurrentValue = false, Flag = "EnableSilent", Callback = function(v) CONFIG.EnableSilent = v end })
+CombatTab:CreateDropdown({ Name = "Silent Mode", Options = {"Raycast", "Viewport"}, CurrentOption = "Raycast", Flag = "SilentMode", Callback = function(v) CONFIG.SilentMode = v[1] or v end })
+CombatTab:CreateToggle({ Name = "Auto Fire", CurrentValue = false, Flag = "AutoFire", Callback = function(v) CONFIG.AutoFire = v end })
+
+-- ==================== MOVEMENT TAB ====================
+MovementTab:CreateSection("Speed")
+MovementTab:CreateToggle({ Name = "Enable Speed", CurrentValue = false, Flag = "EnableSpeed", Callback = function(v)
+    CONFIG.EnableSpeed = v
+    local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if hum then
+        if v then originalWalkSpeed = hum.WalkSpeed; hum.WalkSpeed = CONFIG.SpeedAmount
+        else hum.WalkSpeed = originalWalkSpeed end
+    end
+end })
+MovementTab:CreateSlider({ Name = "Speed Amount", Range = {16, 200}, Increment = 2, Suffix = "", CurrentValue = 30, Flag = "SpeedAmount", Callback = function(v)
+    CONFIG.SpeedAmount = v
+    if CONFIG.EnableSpeed and LocalPlayer.Character then
+        local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if hum then hum.WalkSpeed = v end
+    end
+end })
+
+MovementTab:CreateSection("Spider & NoClip")
+MovementTab:CreateToggle({ Name = "Enable Spider", CurrentValue = false, Flag = "EnableSpider", Callback = function(v) CONFIG.EnableSpider = v end })
+MovementTab:CreateToggle({ Name = "No Clip", CurrentValue = false, Flag = "NoClip", Callback = function(v) CONFIG.NoClip = v end })
+
+MovementTab:CreateSection("Camera & Teleport")
+MovementTab:CreateToggle({ Name = "3rd Person", CurrentValue = false, Flag = "ThirdPerson", Callback = function(v)
+    CONFIG.ThirdPerson = v
+    if v then
+        LocalPlayer.CameraMode = Enum.CameraMode.Classic
+        LocalPlayer.CameraMaxZoomDistance = 15
+        LocalPlayer.CameraMinZoomDistance = 15
+        Camera.CameraType = Enum.CameraType.Custom
+    else
+        LocalPlayer.CameraMode = originalCameraMode
+        LocalPlayer.CameraMaxZoomDistance = originalMaxZoom
+        LocalPlayer.CameraMinZoomDistance = originalMinZoom
+        Camera.CameraType = Enum.CameraType.Custom
+    end
+end })
+
+-- FIXED MOUSE INPUT
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then 
+        isRightMouseDown = true 
+    end
+    if CONFIG.TeleportToMouse and not gameProcessed and input.UserInputType == Enum.UserInputType.MouseButton1 then
+        local mouse = LocalPlayer:GetMouse()
+        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+            LocalPlayer.Character.HumanoidRootPart.CFrame = CFrame.new(mouse.Hit.Position + Vector3.new(0, 3, 0))
+        end
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then 
+        isRightMouseDown = false 
+    end
+end)
+
+-- FIXED FREE CAM USING INPUTCHANGED
+UserInputService.InputChanged:Connect(function(input)
+    if CONFIG.FreeCam and isRightMouseDown and input.UserInputType == Enum.UserInputType.MouseMovement then
+        local delta = input.Delta
+        freeCamAngles = freeCamAngles - Vector2.new(delta.Y * 0.003, delta.X * 0.003)
+        freeCamAngles = Vector2.new(math.clamp(freeCamAngles.X, -math.pi/2 + 0.1, math.pi/2 - 0.1), freeCamAngles.Y)
+    end
+end)
+
+MovementTab:CreateToggle({ Name = "Free Cam (Hold RMB to Look)", CurrentValue = false, Flag = "FreeCam", Callback = function(v)
+    CONFIG.FreeCam = v
+    if v then
+        freeCamPos = Camera.CFrame.Position
+        local _, yaw, pitch = Camera.CFrame:ToEulerAnglesYXZ()
+        freeCamAngles = Vector2.new(pitch, yaw)
+        
+        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+            LocalPlayer.Character.HumanoidRootPart.Anchored = true
+        end
+
+        freeCamConn = RunService.RenderStepped:Connect(function(dt)
+            Camera.CameraType = Enum.CameraType.Scriptable
+            UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter -- Force lock to center so mouse doesn't hit screen edges
+
+            local moveDir = Vector3.new()
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDir = moveDir + Vector3.new(0, 0, -1) end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDir = moveDir + Vector3.new(0, 0, 1) end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveDir = moveDir + Vector3.new(-1, 0, 0) end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveDir = moveDir + Vector3.new(1, 0, 0) end
+            if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveDir = moveDir + Vector3.new(0, 1, 0) end
+            if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then moveDir = moveDir + Vector3.new(0, -1, 0) end
+
+            local rotCF = CFrame.Angles(0, freeCamAngles.Y, 0) * CFrame.Angles(freeCamAngles.X, 0, 0)
+            freeCamPos = freeCamPos + (rotCF:VectorToWorldSpace(moveDir) * (60 * dt))
+            Camera.CFrame = CFrame.new(freeCamPos) * rotCF
+        end)
+    else
+        if freeCamConn then freeCamConn:Disconnect() end
+        Camera.CameraType = Enum.CameraType.Custom
+        UserInputService.MouseBehavior = Enum.MouseBehavior.Default -- Reset mouse
+        
+        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+            LocalPlayer.Character.HumanoidRootPart.Anchored = false
+        end
+    end
+end })
+
+MovementTab:CreateToggle({ Name = "Teleport to Mouse (Toggle)", CurrentValue = false, Flag = "TeleportToMouse", Callback = function(v)
+    CONFIG.TeleportToMouse = v
+end })
+
+-- ==================== SETTINGS TAB ====================
+SettingsTab:CreateButton({
+    Name = "Unload Hub",
+    Callback = function()
+        Rayfield:Destroy()
+        for _, d in pairs(espCache) do
+            for _, obj in pairs(d) do 
+                if typeof(obj) == "table" then
+                    for _, line in ipairs(obj) do pcall(function() line:Remove() end) end
+                else
+                    pcall(function() obj:Remove() end) 
+                end
+            end
+        end
+        for _, obj in pairs(worldEspCache) do pcall(function() obj:Remove() end) end
+        for obj, _ in pairs(trackedOres) do pcall(function() removeOre(obj) end) end
+        pcall(function() fovCircle:Remove() end)
+        if freeCamConn then freeCamConn:Disconnect() end
+        Camera.CameraType = Enum.CameraType.Custom
+        UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+        Lighting.Brightness = originalBrightness
+        Lighting.ClockTime = originalClockTime
+        Lighting.GlobalShadows = originalGlobalShadows
+        Lighting.OutdoorAmbient = originalOutdoorAmbient
+        if LocalPlayer.Character then
+            if LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                LocalPlayer.Character.HumanoidRootPart.Anchored = false
+            end
+            local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if hum then hum.WalkSpeed = originalWalkSpeed end
+        end
+    end,
+})
+
+-- ==================== MAIN RENDER LOOP ====================
+RunService.RenderStepped:Connect(function(dt)
+    if CONFIG.FullBright then
+        Lighting.Brightness = 2
+        Lighting.ClockTime = 14
+        Lighting.GlobalShadows = false
+        Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
+    end
+
+    if CONFIG.ShowFOV then
+        fovCircle.Visible = true
+        fovCircle.Radius = CONFIG.FOVSize
+        fovCircle.Position = UserInputService:GetMouseLocation()
+    else
+        fovCircle.Visible = false
+    end
+
+    if CONFIG.EnableSpeed and LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+        LocalPlayer.Character:FindFirstChildOfClass("Humanoid").WalkSpeed = CONFIG.SpeedAmount
+    end
+
+    if CONFIG.EnableSpider and LocalPlayer.Character then
+        local char = LocalPlayer.Character
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hrp and hum then
+            local rayParams = RaycastParams.new()
+            rayParams.FilterType = Enum.RaycastFilterType.Exclude
+            rayParams.FilterDescendantsInstances = {char}
+            local result = workspace:Raycast(hrp.Position, hrp.CFrame.LookVector * 3, rayParams)
+            if result and result.Instance then
+                hrp.AssemblyLinearVelocity = Vector3.new(hrp.AssemblyLinearVelocity.X, 35, hrp.AssemblyLinearVelocity.Z)
+            end
+        end
+    end
+
+    if CONFIG.NoClip and LocalPlayer.Character then
+        for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
+            if part:IsA("BasePart") then part.CanCollide = false end
+        end
+    end
+
+    -- Render Cached Ores
+    if CONFIG.OreESP then
+        local playerPos = Camera.CFrame.Position
+        for obj, data in pairs(trackedOres) do
+            if data.part and data.part.Parent then
+                local dist = (playerPos - data.part.Position).Magnitude
+                
+                if dist <= CONFIG.OreMaxDistance then
+                    if data.highlight and not data.highlight.Enabled then
+                        data.highlight.Enabled = true
+                    end
+                    
+                    local screenPos, onScreen = Camera:WorldToViewportPoint(data.part.Position)
+                    if onScreen then
+                        local txt = getOrCreateWorldDrawing(obj)
+                        txt.Visible = true
+                        txt.Text = string.format("%s [%.0fm]", data.label, dist)
+                        txt.Position = Vector2.new(screenPos.X, screenPos.Y)
+                    else
+                        if worldEspCache[obj] then worldEspCache[obj].Visible = false end
+                    end
+                else
+                    if data.highlight and data.highlight.Enabled then
+                        data.highlight.Enabled = false
+                    end
+                    if worldEspCache[obj] then worldEspCache[obj].Visible = false end
+                end
+            else
+                removeOre(obj)
+            end
+        end
+    end
+
+    -- PLAYER ESP
+    if not CONFIG.ESPEnabled then
+        for _, drawings in pairs(espCache) do hideDrawings(drawings) end
+        return
+    end
+
+    local activeKeys = {}
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local char = player.Character
+            local rootPart = char:FindFirstChild("HumanoidRootPart")
+            local humanoid = char:FindFirstChildOfClass("Humanoid")
+            local head = char:FindFirstChild("Head")
+
+            if rootPart and head then
+                if not CONFIG.TeamCheck or player.Team ~= LocalPlayer.Team then
+                    local isDead = isPlayerDead(humanoid, char)
+                    local isSleeping = isPlayerSleeping(char)
+
+                    local skipPlayer = false
+                    if CONFIG.DeadCheck and not isDead then skipPlayer = true
+                    elseif not CONFIG.DeadCheck and isDead then skipPlayer = true end
+                    if isSleeping and not CONFIG.SleepingESP then skipPlayer = true end
+
+                    if not skipPlayer then
+                        local dist = (Camera.CFrame.Position - rootPart.Position).Magnitude
+                        if dist <= CONFIG.MaxDistance then
+                            activeKeys[player] = true
+                            local drawings = getOrCreateDrawings(player)
+
+                            local rootPos, onScreen = Camera:WorldToViewportPoint(rootPart.Position)
+                            local headPos = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0))
+                            local legPos = Camera:WorldToViewportPoint(rootPart.Position - Vector3.new(0, 3, 0))
+
+                            if onScreen and drawings then
+                                local height = math.abs(headPos.Y - legPos.Y)
+                                local width = height * 0.5
+                                local boxPos = Vector2.new(rootPos.X - width / 2, headPos.Y)
+
+                                if CONFIG.BoxESP and drawings.Box then
+                                    drawings.Box.Visible = true
+                                    drawings.Box.Size = Vector2.new(width, height)
+                                    drawings.Box.Position = boxPos
+                                    local col = CONFIG.Rainbow and Color3.fromHSV(tick() % 5 / 5, 1, 1) or Color3.fromRGB(255, 255, 255)
+                                    if isSleeping then col = Color3.fromRGB(0, 150, 255) elseif isDead then col = Color3.fromRGB(255, 0, 0) end
+                                    drawings.Box.Color = col
+                                elseif drawings.Box then drawings.Box.Visible = false end
+
+                                local statusTag = ""
+                                if isSleeping then statusTag = " [Sleeping]" elseif isDead then statusTag = " [Dead]" end
+
+                                if CONFIG.NameESP and drawings.Name then
+                                    drawings.Name.Visible = true
+                                    drawings.Name.Text = player.Name .. statusTag
+                                    drawings.Name.Position = Vector2.new(rootPos.X, headPos.Y - 18)
+                                elseif drawings.Name then drawings.Name.Visible = false end
+
+                                if CONFIG.DistanceESP and drawings.Distance then
+                                    drawings.Distance.Visible = true
+                                    drawings.Distance.Text = string.format("[%.0fm]", dist)
+                                    drawings.Distance.Position = Vector2.new(rootPos.X, legPos.Y + 2)
+                                elseif drawings.Distance then drawings.Distance.Visible = false end
+
+                                if CONFIG.HealthESP and drawings.Health and humanoid then
+                                    drawings.Health.Visible = true
+                                    drawings.Health.Text = string.format("HP: %.0f", humanoid.Health)
+                                    drawings.Health.Position = Vector2.new(rootPos.X, legPos.Y + 14)
+                                elseif drawings.Health then drawings.Health.Visible = false end
+
+                                if CONFIG.WeaponESP and drawings.Weapon then
+                                    drawings.Weapon.Visible = true
+                                    drawings.Weapon.Text = string.format("Held: %s", getEquippedWeapon(char))
+                                    drawings.Weapon.Position = Vector2.new(rootPos.X, legPos.Y + 26)
+                                elseif drawings.Weapon then drawings.Weapon.Visible = false end
+
+                                if CONFIG.TracerESP and drawings.Tracer then
+                                    drawings.Tracer.Visible = true
+                                    drawings.Tracer.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
+                                    drawings.Tracer.To = Vector2.new(rootPos.X, legPos.Y)
+                                elseif drawings.Tracer then drawings.Tracer.Visible = false end
+
+                                if CONFIG.SkeletonESP and drawings.Skeletons then
+                                    local torso = char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+                                    local leftArm = char:FindFirstChild("LeftUpperArm") or char:FindFirstChild("Left Arm")
+                                    local rightArm = char:FindFirstChild("RightUpperArm") or char:FindFirstChild("Right Arm")
+                                    local leftLeg = char:FindFirstChild("LeftUpperLeg") or char:FindFirstChild("Left Leg")
+                                    local rightLeg = char:FindFirstChild("RightUpperLeg") or char:FindFirstChild("Right Leg")
+
+                                    if head and torso and leftArm and rightArm and leftLeg and rightLeg then
+                                        local hPos = Camera:WorldToViewportPoint(head.Position)
+                                        local tPos = Camera:WorldToViewportPoint(torso.Position)
+                                        local lA = Camera:WorldToViewportPoint(leftArm.Position)
+                                        local rA = Camera:WorldToViewportPoint(rightArm.Position)
+                                        local lL = Camera:WorldToViewportPoint(leftLeg.Position)
+                                        local rL = Camera:WorldToViewportPoint(rightLeg.Position)
+
+                                        local joints = { {hPos, tPos}, {tPos, lA}, {tPos, rA}, {tPos, lL}, {tPos, rL} }
+                                        for i, joint in ipairs(joints) do
+                                            local line = drawings.Skeletons[i]
+                                            if line then
+                                                line.Visible = true
+                                                line.From = Vector2.new(joint[1].X, joint[1].Y)
+                                                line.To = Vector2.new(joint[2].X, joint[2].Y)
+                                            end
+                                        end
+                                    else
+                                        for _, line in ipairs(drawings.Skeletons) do line.Visible = false end
+                                    end
+                                else
+                                    if drawings.Skeletons then
+                                        for _, line in ipairs(drawings.Skeletons) do line.Visible = false end
+                                    end
+                                end
+                            else
+                                hideDrawings(drawings)
+                            end
+                        else
+                            hideDrawings(espCache[player])
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    for key, drawings in pairs(espCache) do
+        if not activeKeys[key] then hideDrawings(drawings) end
+    end
+end)
+
+Rayfield:LoadConfiguration()
