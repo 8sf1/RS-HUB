@@ -1,0 +1,722 @@
+--[[
+    RS-Hub Murder Mystery 2 (Anti-Fling Added)
+    PlaceId: 142823291
+    Sections: Combat, Visuals, Farming, Movement, Teleport, Settings
+]]
+
+if game.PlaceId ~= 142823291 then
+    return game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "Error",
+        Text = "This script is only for Murder Mystery 2.",
+        Duration = 5
+    })
+end
+
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local LocalPlayer = Players.LocalPlayer
+
+local Config = {
+    Combat = {
+        AutoKill = false,
+        KillAllInnocents = false,
+        AutoPickupGun = false,
+    },
+    Visuals = {
+        ESPEnabled = false,
+        MaxDistance = 1000,
+        ShowDistance = true,
+        MurdererColor = Color3.fromRGB(255, 0, 0),
+        SheriffColor = Color3.fromRGB(0, 100, 255),
+        InnocentColor = Color3.fromRGB(0, 255, 0),
+        ShowGunESP = false,
+        GunColor = Color3.fromRGB(255, 165, 0),
+    },
+    Farm = {
+        AutoCollect = false,
+        FarmDistance = 500,
+        ShowCandy = false, 
+        ItemColor = Color3.fromRGB(255, 255, 0),
+        TravelTime = 1.5,
+        Mode = "Teleport",
+    },
+    Movement = {
+        SpeedEnabled = false,
+        SpeedValue = 50,
+        InfJump = false,
+        NoclipEnabled = false,
+        FlyEnabled = false,
+        FlySpeed = 50,
+        AntiFling = false, -- NEW
+    }
+}
+
+-- Caches to prevent lag
+local Drawings = {}
+local ItemDrawings = {}
+local GunDrawings = {}
+local CachedCandy = {}
+local CachedGuns = {}
+
+local Connections = {}
+local Unloaded = false
+local FlyBodyVel, FlyBodyGyro
+local LastKillTime = 0
+local NextFarmTime = 0
+local SelectedPlayer = nil
+local LastSafePosition = Vector3.zero
+
+local function track(conn)
+    table.insert(Connections, conn)
+    return conn
+end
+
+-- ============ HELPERS ============
+
+local function getCharacter(plr)
+    local char = plr.Character
+    if not char then return nil end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum or hum.Health <= 0 then return nil end
+    return char, hrp, hum
+end
+
+local function getRole(plr)
+    local char = plr.Character
+    local backpack = plr.Backpack
+    if not char then return "Innocent" end
+    
+    if char:FindFirstChild("Knife") or (backpack and backpack:FindFirstChild("Knife")) then
+        return "Murderer"
+    elseif char:FindFirstChild("Gun") or char:FindFirstChild("Revolver") or (backpack and (backpack:FindFirstChild("Gun") or backpack:FindFirstChild("Revolver"))) then
+        return "Sheriff"
+    else
+        return "Innocent"
+    end
+end
+
+local function getLocalRole()
+    return getRole(LocalPlayer)
+end
+
+local function isValidCandy(item)
+    if not item or not item.Parent then return false end
+    if not item:IsA("BasePart") then return false end
+    
+    local name = item.Name:lower()
+    if not (name:find("candy") or name:find("coin")) then return false end
+    if item.Transparency >= 0.95 then return false end 
+    if item.Anchored and item.Size.Magnitude > 25 then return false end
+    
+    return true
+end
+
+-- ============ BACKGROUND SCANNER (NO LAG) ============
+
+task.spawn(function()
+    while not Unloaded do
+        local tempCandy = {}
+        local tempGuns = {}
+        
+        for _, item in ipairs(Workspace:GetDescendants()) do
+            if isValidCandy(item) then
+                table.insert(tempCandy, item)
+            elseif item.Name == "Gun" or item.Name == "Revolver" then
+                table.insert(tempGuns, item)
+            end
+        end
+        
+        CachedCandy = tempCandy
+        CachedGuns = tempGuns
+        
+        task.wait(0.5)
+    end
+end)
+
+-- ============ ESP SYSTEM ============
+
+local function createESP(plr)
+    if plr == LocalPlayer then return end
+    if Drawings[plr] then return end
+    Drawings[plr] = {
+        Box = Drawing.new("Square"),
+        Name = Drawing.new("Text"),
+        Distance = Drawing.new("Text"),
+        Role = Drawing.new("Text")
+    }
+    local d = Drawings[plr]
+    d.Box.Thickness = 1
+    d.Box.Filled = false
+    d.Box.Transparency = 1
+    d.Name.Size = 14
+    d.Name.Center = true
+    d.Name.Outline = true
+    d.Name.Font = 2
+    d.Distance.Size = 14
+    d.Distance.Center = true
+    d.Distance.Outline = true
+    d.Distance.Font = 2
+    d.Role.Size = 14
+    d.Role.Center = true
+    d.Role.Outline = true
+    d.Role.Font = 2
+end
+
+local function removeESP(plr)
+    if not Drawings[plr] then return end
+    for _, obj in pairs(Drawings[plr]) do
+        obj:Remove()
+    end
+    Drawings[plr] = nil
+end
+
+local function updateESP()
+    local Camera = Workspace.CurrentCamera
+    if not Camera then return end
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr == LocalPlayer then continue end
+        if not Drawings[plr] then createESP(plr) end
+        local d = Drawings[plr]
+        local char, hrp, hum = getCharacter(plr)
+        
+        if not char or not Config.Visuals.ESPEnabled then
+            for _, obj in pairs(d) do obj.Visible = false end
+            continue
+        end
+
+        local dist = (hrp.Position - Camera.CFrame.Position).Magnitude
+        if dist > Config.Visuals.MaxDistance then
+            for _, obj in pairs(d) do obj.Visible = false end
+            continue
+        end
+
+        local rootPos, onScreen = Camera:WorldToViewportPoint(hrp.Position)
+        if not onScreen then
+            for _, obj in pairs(d) do obj.Visible = false end
+            continue
+        end
+
+        local headPos = Camera:WorldToViewportPoint(hrp.Position + Vector3.new(0, 1.5, 0))
+        local footPos = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 3, 0))
+        
+        local height = math.abs(footPos.Y - headPos.Y)
+        local width = height / 2
+        local role = getRole(plr)
+        local color = Config.Visuals.InnocentColor
+
+        if role == "Murderer" then color = Config.Visuals.MurdererColor
+        elseif role == "Sheriff" then color = Config.Visuals.SheriffColor end
+
+        d.Box.Visible = true
+        d.Box.Color = color
+        d.Box.Size = Vector2.new(width, height)
+        d.Box.Position = Vector2.new(rootPos.X - width / 2, headPos.Y)
+
+        d.Name.Visible = true
+        d.Name.Color = color
+        d.Name.Text = plr.Name
+        d.Name.Position = Vector2.new(rootPos.X, headPos.Y - 30)
+
+        d.Role.Visible = true
+        d.Role.Color = color
+        d.Role.Text = role
+        d.Role.Position = Vector2.new(rootPos.X, headPos.Y - 16)
+
+        d.Distance.Visible = Config.Visuals.ShowDistance
+        d.Distance.Color = Color3.new(1,1,1)
+        d.Distance.Text = math.floor(dist) .. "m"
+        d.Distance.Position = Vector2.new(rootPos.X, footPos.Y + 2)
+    end
+
+    for _, item in ipairs(CachedCandy) do
+        if item.Parent then
+            if not ItemDrawings[item] then
+                ItemDrawings[item] = Drawing.new("Text")
+                ItemDrawings[item].Size = 14
+                ItemDrawings[item].Center = true
+                ItemDrawings[item].Outline = true
+            end
+            local d = ItemDrawings[item]
+            local rootPos, onScreen = Camera:WorldToViewportPoint(item.Position)
+            
+            if onScreen and Config.Farm.ShowCandy then
+                d.Visible = true
+                d.Text = "[" .. item.Name .. "]"
+                d.Color = Config.Farm.ItemColor
+                d.Position = Vector2.new(rootPos.X, rootPos.Y)
+            else
+                d.Visible = false
+            end
+        end
+    end
+    
+    for _, item in ipairs(CachedGuns) do
+        local pos = nil
+        if item.Parent then
+            if item:IsA("Tool") and item:FindFirstChild("Handle") then
+                pos = item.Handle.Position
+            elseif item:IsA("Model") and item.PrimaryPart then
+                pos = item.PrimaryPart.Position
+            elseif item:IsA("BasePart") then
+                pos = item.Position
+            end
+        end
+
+        if pos then
+            if not GunDrawings[item] then
+                GunDrawings[item] = Drawing.new("Text")
+                GunDrawings[item].Size = 14
+                GunDrawings[item].Center = true
+                GunDrawings[item].Outline = true
+            end
+            local d = GunDrawings[item]
+            local rootPos, onScreen = Camera:WorldToViewportPoint(pos)
+            
+            if onScreen and Config.Visuals.ShowGunESP then
+                d.Visible = true
+                d.Text = "[SHERIFF GUN]"
+                d.Color = Config.Visuals.GunColor
+                d.Position = Vector2.new(rootPos.X, rootPos.Y)
+            else
+                d.Visible = false
+            end
+        end
+    end
+end
+
+-- ============ COMBAT & AUTO PICKUP LOGIC ============
+
+local function autoPickupGun()
+    if not Config.Combat.AutoPickupGun then return end
+    local char, hrp, hum = getCharacter(LocalPlayer)
+    if not char or not hrp then return end
+
+    local backpack = LocalPlayer:FindFirstChild("Backpack")
+    if char:FindFirstChild("Gun") or char:FindFirstChild("Revolver") or (backpack and (backpack:FindFirstChild("Gun") or backpack:FindFirstChild("Revolver"))) then
+        return 
+    end
+
+    for _, item in ipairs(CachedGuns) do
+        local pos = nil
+        if item.Parent then
+            if item:IsA("Tool") and item:FindFirstChild("Handle") then
+                pos = item.Handle.Position
+            elseif item:IsA("Model") and item.PrimaryPart then
+                pos = item.PrimaryPart.Position
+            elseif item:IsA("BasePart") then
+                pos = item.Position
+            end
+        end
+
+        if pos then
+            local dist = (pos - hrp.Position).Magnitude
+            if dist < 1500 then 
+                hrp.CFrame = CFrame.new(pos + Vector3.new(0, 2, 0))
+                break
+            end
+        end
+    end
+end
+
+local function processAutoKill()
+    local myRole = getLocalRole()
+    local cooldown = (myRole == "Sheriff") and 1.5 or 0.4 
+    
+    if tick() - LastKillTime < cooldown then return end 
+
+    local char, hrp, hum = getCharacter(LocalPlayer)
+    if not hrp or not hum then return end
+    
+    local target = nil
+
+    if myRole == "Murderer" then
+        if Config.Combat.KillAllInnocents then
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr ~= LocalPlayer then
+                    local tChar, tHrp, tHum = getCharacter(plr)
+                    if tChar and tHrp and tHum and tHum.Health > 0 then
+                        if getRole(plr) == "Innocent" then
+                            target = plr
+                            break
+                        end
+                    end
+                end
+            end
+        elseif Config.Combat.AutoKill then
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr ~= LocalPlayer then
+                    local tChar, tHrp, tHum = getCharacter(plr)
+                    if tChar and tHrp and tHum and tHum.Health > 0 then
+                        if (tHrp.Position - hrp.Position).Magnitude < 2000 then
+                            target = plr
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    elseif myRole == "Sheriff" then
+        if Config.Combat.AutoKill then
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr ~= LocalPlayer and getRole(plr) == "Murderer" then
+                    local tChar, tHrp, tHum = getCharacter(plr)
+                    if tChar and tHrp and tHum and tHum.Health > 0 then
+                        target = plr
+                        break
+                    end
+                end
+            end
+        end
+    end
+
+    if target then
+        local tChar, tHrp, tHum = getCharacter(target)
+        if tHrp and tHum and tHum.Health > 0 then
+            hrp.CFrame = CFrame.lookAt(tHrp.Position + Vector3.new(0, 0, -3), tHrp.Position)
+            
+            if myRole == "Sheriff" then
+                local tool = char:FindFirstChildOfClass("Tool")
+                if tool and (tool.Name == "Gun" or tool.Name == "Revolver") then
+                    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+                    task.delay(0.05, function()
+                        VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+                    end)
+                end
+            else
+                local tool = char:FindFirstChildOfClass("Tool")
+                if tool then pcall(function() tool:Activate() end) end
+            end
+            
+            LastKillTime = tick()
+        end
+    end
+end
+
+-- ============ ADVANCED FARMING ============
+
+local function autoFarm()
+    if not Config.Farm.AutoCollect then return end
+    if tick() < NextFarmTime then return end
+    
+    local char, hrp = getCharacter(LocalPlayer)
+    if not hrp then return end
+
+    local closestItem = nil
+    local shortestDist = Config.Farm.FarmDistance
+
+    for _, item in ipairs(CachedCandy) do
+        if item.Parent then
+            local dist = (item.Position - hrp.Position).Magnitude
+            if dist < shortestDist then
+                shortestDist = dist
+                closestItem = item
+            end
+        end
+    end
+
+    if closestItem then
+        if Config.Farm.Mode == "Teleport" then
+            hrp.CFrame = CFrame.new(closestItem.Position + Vector3.new(0, 2, 0))
+            NextFarmTime = tick() + Config.Farm.TravelTime 
+        else
+            local targetPos = closestItem.Position
+            local dist = (targetPos - hrp.Position).Magnitude
+            
+            if dist < 3 then
+                hrp.CFrame = CFrame.new(targetPos)
+                NextFarmTime = tick() + Config.Farm.TravelTime
+            else
+                local dir = (targetPos - hrp.Position).Unit
+                local moveAmount = math.min(dist, dist * 0.1 + 2)
+                hrp.CFrame = hrp.CFrame + (dir * moveAmount)
+            end
+        end
+    end
+end
+
+-- ============ MOVEMENT & ANTI-FLING ============
+
+track(UserInputService.JumpRequest:Connect(function()
+    if Unloaded or not Config.Movement.InfJump then return end
+    local char, hrp, hum = getCharacter(LocalPlayer)
+    if hrp then
+        hrp.AssemblyLinearVelocity = Vector3.new(hrp.AssemblyLinearVelocity.X, 50, hrp.AssemblyLinearVelocity.Z)
+    end
+end))
+
+local function applyAntiFling()
+    if not Config.Movement.AntiFling then return end
+    local char, hrp, hum = getCharacter(LocalPlayer)
+    if not char or not hrp or not hum then return end
+
+    local vel = hrp.AssemblyLinearVelocity
+    
+    -- Check for impossible velocity (fling)
+    if vel.Magnitude > 150 or math.abs(vel.X) > 150 or math.abs(vel.Z) > 150 then
+        -- Reset velocity and snap to last safe position
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.CFrame = CFrame.new(LastSafePosition)
+    else
+        -- Update last safe position if we are grounded or moving normally
+        if hum.FloorMaterial ~= Enum.Material.Air or vel.Magnitude < 50 then
+            LastSafePosition = hrp.Position
+        end
+    end
+end
+
+local function applyMovement()
+    local char, hrp, hum = getCharacter(LocalPlayer)
+    if not char or not hrp or not hum then return end
+
+    if Config.Movement.SpeedEnabled then
+        hum.WalkSpeed = Config.Movement.SpeedValue
+    else
+        if hum.WalkSpeed == Config.Movement.SpeedValue then
+            hum.WalkSpeed = 16
+        end
+    end
+
+    if Config.Movement.NoclipEnabled then
+        for _, v in ipairs(char:GetDescendants()) do
+            if v:IsA("BasePart") and v.CanCollide then v.CanCollide = false end
+        end
+    end
+
+    if Config.Movement.FlyEnabled then
+        hum.PlatformStand = true
+        
+        if not FlyBodyVel or not FlyBodyVel.Parent then
+            FlyBodyVel = Instance.new("BodyVelocity")
+            FlyBodyVel.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+            FlyBodyVel.Parent = hrp
+        end
+        if not FlyBodyGyro or not FlyBodyGyro.Parent then
+            FlyBodyGyro = Instance.new("BodyGyro")
+            FlyBodyGyro.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
+            FlyBodyGyro.P = 10000
+            FlyBodyGyro.Parent = hrp
+        end
+        
+        local Camera = Workspace.CurrentCamera
+        FlyBodyGyro.CFrame = Camera.CFrame
+        local camCF = Camera.CFrame
+        local moveDir = Vector3.zero
+        
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDir = moveDir + camCF.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDir = moveDir - camCF.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveDir = moveDir - camCF.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveDir = moveDir + camCF.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveDir = moveDir + Vector3.new(0, 1, 0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then moveDir = moveDir - Vector3.new(0, 1, 0) end
+        
+        if moveDir.Magnitude > 0 then
+            FlyBodyVel.Velocity = moveDir.Unit * Config.Movement.FlySpeed
+        else
+            FlyBodyVel.Velocity = Vector3.zero
+        end
+    else
+        if FlyBodyVel then FlyBodyVel:Destroy() FlyBodyVel = nil end
+        if FlyBodyGyro then FlyBodyGyro:Destroy() FlyBodyGyro = nil end
+        if hum.PlatformStand then hum.PlatformStand = false end
+    end
+end
+
+-- ============ LOOPS ============
+
+track(RunService.RenderStepped:Connect(function(dt)
+    if Unloaded then return end
+    
+    applyAntiFling() -- Run Anti-Fling first
+    
+    updateESP()
+    applyMovement()
+    processAutoKill()
+    autoPickupGun()
+    autoFarm()
+end))
+
+for _, plr in ipairs(Players:GetPlayers()) do if plr ~= LocalPlayer then createESP(plr) end end
+track(Players.PlayerAdded:Connect(function(plr) if not Unloaded and plr ~= LocalPlayer then createESP(plr) end end))
+track(Players.PlayerRemoving:Connect(function(plr) if not Unloaded then removeESP(plr) end end))
+
+-- ============ UI SETUP ============
+
+local Window = Rayfield:CreateWindow({
+   Name = "RS-Hub MM2",
+   LoadingTitle = "Loading...",
+   LoadingSubtitle = "by RS-Hub",
+   ConfigurationSaving = {Enabled = false},
+   KeySystem = false,
+})
+
+local CombatTab = Window:CreateTab("Combat", nil)
+local VisualsTab = Window:CreateTab("Visuals", nil)
+local FarmTab = Window:CreateTab("Farming", nil)
+local MoveTab = Window:CreateTab("Movement", nil)
+local TeleportTab = Window:CreateTab("Teleport", nil)
+local SettingsTab = Window:CreateTab("Settings", nil)
+
+-- COMBAT TAB
+CombatTab:CreateSection("Combat Mods")
+CombatTab:CreateToggle({ Name = "Enable Auto Kill (Sheriff Auto-Shoots)", CurrentValue = false, Callback = function(v) Config.Combat.AutoKill = v end })
+CombatTab:CreateToggle({ Name = "Enable Kill All Innocents (Murderer Only)", CurrentValue = false, Callback = function(v) Config.Combat.KillAllInnocents = v end })
+CombatTab:CreateToggle({ Name = "Auto Pickup Sheriff Gun (Teleports)", CurrentValue = false, Callback = function(v) Config.Combat.AutoPickupGun = v end })
+
+-- VISUALS TAB
+VisualsTab:CreateSection("ESP Settings")
+VisualsTab:CreateToggle({ 
+    Name = "Enable Player ESP", 
+    CurrentValue = false, 
+    Callback = function(v) 
+        Config.Visuals.ESPEnabled = v 
+        if not v then
+            for _, d in pairs(Drawings) do
+                for _, obj in pairs(d) do obj.Visible = false end
+            end
+        end
+    end 
+})
+VisualsTab:CreateSlider({ Name = "Max Distance", Range = {50, 5000}, Increment = 50, CurrentValue = 1000, Callback = function(v) Config.Visuals.MaxDistance = v end })
+VisualsTab:CreateToggle({ Name = "Show Distance", CurrentValue = true, Callback = function(v) Config.Visuals.ShowDistance = v end })
+
+VisualsTab:CreateSection("ESP Colors")
+VisualsTab:CreateColorPicker({ Name = "Murderer Color", Color = Color3.fromRGB(255, 0, 0), Callback = function(v) Config.Visuals.MurdererColor = v end })
+VisualsTab:CreateColorPicker({ Name = "Sheriff Color", Color = Color3.fromRGB(0, 100, 255), Callback = function(v) Config.Visuals.SheriffColor = v end })
+VisualsTab:CreateColorPicker({ Name = "Innocent Color", Color = Color3.fromRGB(0, 255, 0), Callback = function(v) Config.Visuals.InnocentColor = v end })
+
+VisualsTab:CreateSection("Gun Finder")
+VisualsTab:CreateToggle({ 
+    Name = "Show Sheriff Gun ESP", 
+    CurrentValue = false, 
+    Callback = function(v) 
+        Config.Visuals.ShowGunESP = v 
+        if not v then
+            for _, d in pairs(GunDrawings) do d.Visible = false end
+        end
+    end 
+})
+VisualsTab:CreateColorPicker({ Name = "Gun Color", Color = Color3.fromRGB(255, 165, 0), Callback = function(v) Config.Visuals.GunColor = v end })
+
+-- FARM TAB
+FarmTab:CreateSection("Auto Farm")
+FarmTab:CreateToggle({ Name = "Auto Collect Candy", CurrentValue = false, Callback = function(v) Config.Farm.AutoCollect = v end })
+FarmTab:CreateSlider({ Name = "Farm Range", Range = {50, 1000}, Increment = 10, CurrentValue = 500, Callback = function(v) Config.Farm.FarmDistance = v end })
+
+FarmTab:CreateDropdown({
+    Name = "Farm Mode",
+    Options = {"Teleport", "Goto (Fly)"},
+    CurrentOption = {"Teleport"},
+    MultipleOptions = false,
+    Callback = function(opt) Config.Farm.Mode = opt[1] end,
+})
+
+FarmTab:CreateSlider({ 
+    Name = "Travel Time (Seconds)", 
+    Range = {0.1, 15}, 
+    Increment = 0.1, 
+    CurrentValue = 1.5, 
+    Callback = function(v) Config.Farm.TravelTime = v end 
+})
+FarmTab:CreateLabel("⚠ USE AT YOUR OWN RISK (Low values may kick you)", Color3.fromRGB(255, 50, 50))
+
+FarmTab:CreateSection("Candy Finder")
+FarmTab:CreateToggle({ 
+    Name = "Show Candy ESP", 
+    CurrentValue = false, 
+    Callback = function(v) 
+        Config.Farm.ShowCandy = v 
+        if not v then
+            for _, d in pairs(ItemDrawings) do d.Visible = false end
+        end
+    end 
+})
+FarmTab:CreateColorPicker({ Name = "Candy Color", Color = Color3.fromRGB(255, 255, 0), Callback = function(v) Config.Farm.ItemColor = v end })
+
+-- MOVEMENT TAB
+MoveTab:CreateSection("Player Speed")
+MoveTab:CreateToggle({ Name = "Enable Speed", CurrentValue = false, Callback = function(v) Config.Movement.SpeedEnabled = v end })
+MoveTab:CreateSlider({ Name = "WalkSpeed", Range = {16, 100}, Increment = 1, CurrentValue = 50, Callback = function(v) Config.Movement.SpeedValue = v end })
+
+MoveTab:CreateSection("Player Physics")
+MoveTab:CreateToggle({ Name = "Infinite Jump", CurrentValue = false, Callback = function(v) Config.Movement.InfJump = v end })
+MoveTab:CreateToggle({ Name = "Enable Noclip", CurrentValue = false, Callback = function(v) Config.Movement.NoclipEnabled = v end })
+
+MoveTab:CreateSection("Flight")
+MoveTab:CreateToggle({ Name = "Enable Fly", CurrentValue = false, Callback = function(v) Config.Movement.FlyEnabled = v end })
+MoveTab:CreateSlider({ Name = "Fly Speed", Range = {10, 200}, Increment = 5, CurrentValue = 50, Callback = function(v) Config.Movement.FlySpeed = v end })
+
+MoveTab:CreateSection("Protection")
+MoveTab:CreateToggle({ 
+    Name = "Anti-Fling (Hacker Protection)", 
+    CurrentValue = false, 
+    Callback = function(v) 
+        Config.Movement.AntiFling = v 
+        local _, hrp = getCharacter(LocalPlayer)
+        if hrp then LastSafePosition = hrp.Position end
+    end 
+})
+
+-- TELEPORT TAB
+TeleportTab:CreateSection("Teleport to Player")
+local playerList = {}
+for _, p in ipairs(Players:GetPlayers()) do
+    if p ~= LocalPlayer then table.insert(playerList, p.Name) end
+end
+
+TeleportDropdown = TeleportTab:CreateDropdown({
+    Name = "Select Player",
+    Options = playerList,
+    CurrentOption = {},
+    MultipleOptions = false,
+    Flag = "PlayerTP",
+    Callback = function(option) SelectedPlayer = option[1] end,
+})
+
+TeleportTab:CreateButton({
+    Name = "Teleport to Selected Player",
+    Callback = function()
+        if SelectedPlayer then
+            local target = Players:FindFirstChild(SelectedPlayer)
+            if target then
+                local tChar, tHrp, tHum = getCharacter(target)
+                local char, hrp, hum = getCharacter(LocalPlayer)
+                if tHrp and hrp then
+                    hrp.CFrame = tHrp.CFrame * CFrame.new(0, 0, -3)
+                end
+            end
+        end
+    end,
+})
+
+Players.PlayerAdded:Connect(function(p)
+    table.insert(playerList, p.Name)
+    if TeleportDropdown then TeleportDropdown:Refresh(playerList) end
+end)
+Players.PlayerRemoving:Connect(function(p)
+    for i, name in ipairs(playerList) do
+        if name == p.Name then table.remove(playerList, i) break end
+    end
+    if TeleportDropdown then TeleportDropdown:Refresh(playerList) end
+end)
+
+-- SETTINGS TAB
+SettingsTab:CreateSection("Configuration")
+SettingsTab:CreateButton({
+    Name = "Unload Script",
+    Callback = function()
+        Unloaded = true
+        if FlyBodyVel then FlyBodyVel:Destroy() end
+        if FlyBodyGyro then FlyBodyGyro:Destroy() end
+        for plr, _ in pairs(Drawings) do removeESP(plr) end
+        for item, d in pairs(ItemDrawings) do d:Remove() end
+        for item, d in pairs(GunDrawings) do d:Remove() end
+        for _, conn in ipairs(Connections) do pcall(function() conn:Disconnect() end) end
+        Rayfield:Destroy()
+    end,
+})
