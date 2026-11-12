@@ -1,5 +1,5 @@
 --[[
-    RS-Hub Murder Mystery 2 (Anti-Fling Added)
+    RS-Hub Murder Mystery 2 (Continuous Straight-Line Fly)
     PlaceId: 142823291
     Sections: Combat, Visuals, Farming, Movement, Teleport, Settings
 ]]
@@ -51,7 +51,7 @@ local Config = {
         NoclipEnabled = false,
         FlyEnabled = false,
         FlySpeed = 50,
-        AntiFling = false, -- NEW
+        AntiFling = false,
     }
 }
 
@@ -66,9 +66,13 @@ local Connections = {}
 local Unloaded = false
 local FlyBodyVel, FlyBodyGyro
 local LastKillTime = 0
-local NextFarmTime = 0
 local SelectedPlayer = nil
 local LastSafePosition = Vector3.zero
+
+-- Farm State
+local CurrentFarmTarget = nil
+local FarmStartTime = 0
+local FarmStartPos = nil
 
 local function track(conn)
     table.insert(Connections, conn)
@@ -398,43 +402,63 @@ local function processAutoKill()
     end
 end
 
--- ============ ADVANCED FARMING ============
+-- ============ CONTINUOUS FARMING (NO WAIT, STRAIGHT LINE) ============
 
 local function autoFarm()
-    if not Config.Farm.AutoCollect then return end
-    if tick() < NextFarmTime then return end
+    if not Config.Farm.AutoCollect then 
+        CurrentFarmTarget = nil
+        return 
+    end
     
     local char, hrp = getCharacter(LocalPlayer)
     if not hrp then return end
 
-    local closestItem = nil
-    local shortestDist = Config.Farm.FarmDistance
+    -- If target is gone (collected), clear it immediately
+    if CurrentFarmTarget and not CurrentFarmTarget.Parent then
+        CurrentFarmTarget = nil
+    end
 
-    for _, item in ipairs(CachedCandy) do
-        if item.Parent then
-            local dist = (item.Position - hrp.Position).Magnitude
-            if dist < shortestDist then
-                shortestDist = dist
-                closestItem = item
+    -- Find a new target instantly if we don't have one
+    if not CurrentFarmTarget then
+        local closestItem = nil
+        local shortestDist = Config.Farm.FarmDistance
+
+        for _, item in ipairs(CachedCandy) do
+            if item.Parent then
+                local dist = (item.Position - hrp.Position).Magnitude
+                if dist < shortestDist then
+                    shortestDist = dist
+                    closestItem = item
+                end
             end
+        end
+        
+        if closestItem then
+            CurrentFarmTarget = closestItem
+            FarmStartTime = tick()
+            FarmStartPos = hrp.Position
         end
     end
 
-    if closestItem then
+    -- Move to target
+    if CurrentFarmTarget then
         if Config.Farm.Mode == "Teleport" then
-            hrp.CFrame = CFrame.new(closestItem.Position + Vector3.new(0, 2, 0))
-            NextFarmTime = tick() + Config.Farm.TravelTime 
+            -- Snap instantly and clear target
+            hrp.CFrame = CFrame.new(CurrentFarmTarget.Position + Vector3.new(0, 2, 0))
+            CurrentFarmTarget = nil
         else
-            local targetPos = closestItem.Position
-            local dist = (targetPos - hrp.Position).Magnitude
-            
-            if dist < 3 then
+            -- Continuous Straight-Line Fly (Phases through walls)
+            local targetPos = CurrentFarmTarget.Position + Vector3.new(0, 1, 0)
+            local timeElapsed = tick() - FarmStartTime
+            local alpha = timeElapsed / Config.Farm.TravelTime
+
+            if alpha >= 1 then
+                -- Reached the end of the flight duration
                 hrp.CFrame = CFrame.new(targetPos)
-                NextFarmTime = tick() + Config.Farm.TravelTime
+                CurrentFarmTarget = nil
             else
-                local dir = (targetPos - hrp.Position).Unit
-                local moveAmount = math.min(dist, dist * 0.1 + 2)
-                hrp.CFrame = hrp.CFrame + (dir * moveAmount)
+                -- Smoothly move along the line from StartPos to TargetPos
+                hrp.CFrame = CFrame.new(FarmStartPos:Lerp(targetPos, alpha))
             end
         end
     end
@@ -457,13 +481,10 @@ local function applyAntiFling()
 
     local vel = hrp.AssemblyLinearVelocity
     
-    -- Check for impossible velocity (fling)
     if vel.Magnitude > 150 or math.abs(vel.X) > 150 or math.abs(vel.Z) > 150 then
-        -- Reset velocity and snap to last safe position
         hrp.AssemblyLinearVelocity = Vector3.zero
         hrp.CFrame = CFrame.new(LastSafePosition)
     else
-        -- Update last safe position if we are grounded or moving normally
         if hum.FloorMaterial ~= Enum.Material.Air or vel.Magnitude < 50 then
             LastSafePosition = hrp.Position
         end
@@ -532,8 +553,7 @@ end
 track(RunService.RenderStepped:Connect(function(dt)
     if Unloaded then return end
     
-    applyAntiFling() -- Run Anti-Fling first
-    
+    applyAntiFling()
     updateESP()
     applyMovement()
     processAutoKill()
@@ -617,7 +637,7 @@ FarmTab:CreateDropdown({
 })
 
 FarmTab:CreateSlider({ 
-    Name = "Travel Time (Seconds)", 
+    Name = "Travel Time (Seconds per Candy)", 
     Range = {0.1, 15}, 
     Increment = 0.1, 
     CurrentValue = 1.5, 
